@@ -58,7 +58,8 @@ impl<'source> Vars<'source> {
 
     pub fn variable_index(&self, name: &str) -> Option<usize> {
         let n_vars = self.0.len();
-        self.0.iter()
+        self.0
+            .iter()
             .position(|&var| var == name)
             .map(|index| n_vars - 1 - index)
     }
@@ -106,6 +107,19 @@ pub fn parse(source: &str) -> Result<Term, Vec<Error>> {
     Ok(the_term)
 }
 
+type ParseResult<T> = Result<T, Vec<Error>>;
+
+fn res_combine<T, U>(a: ParseResult<T>, b: ParseResult<U>) -> ParseResult<(T, U)> {
+    match (a, b) {
+        (Ok(a), Ok(b)) => Ok((a, b)),
+        (Err(e), _) | (_, Err(e)) => Err(e),
+        (Err(mut a), Err(b)) => {
+            a.extend(b);
+            Err(a)
+        }
+    }
+}
+
 /// Parses a term from the current position.
 fn term<'source>(source: &'source str, state: &mut State<'source>) -> Result<Term, Vec<Error>> {
     // First, parse an atom.
@@ -113,6 +127,18 @@ fn term<'source>(source: &'source str, state: &mut State<'source>) -> Result<Ter
         .transpose()
         .ok_or(vec![Error::TermNotFound])?;
     skip_whitespace(source, state);
+
+    if pop_eq_str(source, state, "->") {
+        skip_whitespace(source, state);
+        // TODO: Make a ParseResult type.
+        let ret = term(source, state);
+        let (first_atom, ret) = res_combine(first_atom, ret)?;
+        return Ok(Term::Binder {
+            binder: BinderKind::Pi,
+            ty: Rc::new(first_atom),
+            body: Rc::new(ret),
+        });
+    }
 
     // Then, parse a list of more atoms!
     let mut applications: Result<Vec<Term>, Vec<Error>> = match &first_atom {
@@ -147,7 +173,10 @@ fn term<'source>(source: &'source str, state: &mut State<'source>) -> Result<Ter
 }
 
 /// Parses an atom from the current position.
-fn atom<'source>(source: &'source str, state: &mut State<'source>) -> Result<Option<Term>, Vec<Error>> {
+fn atom<'source>(
+    source: &'source str,
+    state: &mut State<'source>,
+) -> Result<Option<Term>, Vec<Error>> {
     skip_whitespace(source, state);
 
     if pop_eq(source, state, '(') {
@@ -172,7 +201,10 @@ fn atom<'source>(source: &'source str, state: &mut State<'source>) -> Result<Opt
     }
 }
 
-fn function_term<'source>(source: &'source str, state: &mut State<'source>) -> Result<Term, Vec<Error>> {
+fn function_term<'source>(
+    source: &'source str,
+    state: &mut State<'source>,
+) -> Result<Term, Vec<Error>> {
     skip_whitespace(source, state);
 
     let parameter_name = identifier_or_keyword(source, state)
@@ -192,7 +224,7 @@ fn function_term<'source>(source: &'source str, state: &mut State<'source>) -> R
 
     skip_whitespace(source, state);
 
-    pop_eq_str(source, state, "->");
+    pop_eq_str(source, state, "=>");
 
     skip_whitespace(source, state);
 
@@ -207,7 +239,10 @@ fn function_term<'source>(source: &'source str, state: &mut State<'source>) -> R
     })
 }
 
-fn identifier_or_keyword<'source>(source: &'source str, state: &mut State) -> Option<IdentifierOrKeyword<'source>> {
+fn identifier_or_keyword<'source>(
+    source: &'source str,
+    state: &mut State,
+) -> Option<IdentifierOrKeyword<'source>> {
     fn identifier<'source>(source: &'source str, state: &mut State) -> Option<&'source str> {
         fn identifier_start(c: char) -> bool {
             c.is_ascii_alphabetic() || c == '_'
@@ -223,7 +258,9 @@ fn identifier_or_keyword<'source>(source: &'source str, state: &mut State) -> Op
 
         let start = state.index;
         loop {
-            let cont = peek(source, state).map(identifier_continue).unwrap_or(false);
+            let cont = peek(source, state)
+                .map(identifier_continue)
+                .unwrap_or(false);
             if !cont {
                 break;
             }
@@ -366,15 +403,18 @@ fn skip_until(source: &str, state: &mut State, ch: char) -> bool {
 
 fn pop_eq_str(source: &str, state: &mut State, string: &str) -> bool {
     let end_index = string.len() + state.index;
-    if rest(source, state).starts_with(string) {
-        while end_index > state.index {
-            let res = line_pop(source, state);
-            // If EOL is reached, exit early (Otherwise it won't exit at
-            // all).
-            if res.is_none() {
-                return false;
-            }
+
+    if !rest(source, state).starts_with(string) {
+        return false;
+    }
+    while end_index > state.index {
+        let res = line_pop(source, state);
+        // If EOL is reached, exit early (Otherwise it won't exit at
+        // all).
+        if res.is_none() {
+            return false;
         }
     }
+
     return true;
 }

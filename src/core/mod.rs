@@ -1,5 +1,5 @@
+use std::fmt::{self, Display, Formatter};
 use std::rc::Rc;
-use std::fmt::{self, Formatter, Display};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BinderKind {
@@ -35,12 +35,15 @@ pub enum Term {
     Type,
 }
 
-fn extend<T, I: IntoIterator<Item=T>>(mut left: Vec<T>, right: I) -> Vec<T> {
+fn extend<T, I: IntoIterator<Item = T>>(mut left: Vec<T>, right: I) -> Vec<T> {
     left.extend(right);
     left
 }
 
-fn result_combine<T, U, E>(left: Result<T, Vec<E>>, right: Result<U, Vec<E>>) -> Result<(T, U), Vec<E>> {
+fn result_combine<T, U, E>(
+    left: Result<T, Vec<E>>,
+    right: Result<U, Vec<E>>,
+) -> Result<(T, U), Vec<E>> {
     match (left, right) {
         (Ok(l), Ok(r)) => Ok((l, r)),
         (Err(l), Err(r)) => Err(extend(l, r)),
@@ -55,12 +58,18 @@ impl Term {
         match self {
             Var(var) => vec![var.clone()],
             Appl(lhs, rhs) => extend(lhs.free_vars(), rhs.free_vars()),
-            Binder { ty, body, .. } => extend(
-                ty.free_vars(),
-                body.free_vars().iter().filter_map(|&index| {
-                    if index > 0 { Some(index - 1) } else { None }
-                }),
-            ),
+            Binder { ty, body, .. } => {
+                extend(
+                    ty.free_vars(),
+                    body.free_vars().iter().filter_map(|&index| {
+                        if index > 0 {
+                            Some(index - 1)
+                        } else {
+                            None
+                        }
+                    }),
+                )
+            }
             Prop => vec![],
             Type => vec![],
         }
@@ -116,7 +125,9 @@ impl Term {
     fn eval_with_stack(&self, stack: &mut Vec<Option<Term>>) -> Term {
         use Term::*;
         match self {
-            Var(var) => stack[stack.len() - 1 - *var].clone().unwrap_or_else(|| self.clone()),
+            Var(var) => stack[stack.len() - 1 - *var]
+                .clone()
+                .unwrap_or_else(|| self.clone()),
             Appl(lhs, rhs) => {
                 let lhs = lhs.eval_with_stack(stack);
                 let rhs = rhs.eval_with_stack(stack);
@@ -132,7 +143,12 @@ impl Term {
             Binder { binder, ty, body } => Binder {
                 binder: binder.clone(),
                 ty: Rc::new(ty.eval_with_stack(stack)),
-                body: Rc::new(body.eval_with_stack(stack)),
+                body: {
+                    stack.push(None);
+                    let body = body.eval_with_stack(stack);
+                    stack.pop();
+                    Rc::new(body)
+                },
             },
             Prop | Type => self.clone(),
         }
@@ -143,7 +159,10 @@ impl Term {
         self.eval_with_stack(&mut stack)
     }
 
-    pub fn infer_type_with_ctx(&self, variable_types: &mut Vec<Rc<Term>>) -> Result<Term, Vec<String>> {
+    pub fn infer_type_with_ctx(
+        &self,
+        variable_types: &mut Vec<Rc<Term>>,
+    ) -> Result<Term, Vec<String>> {
         use Term::*;
         match self {
             Var(var) => Ok(variable_types[variable_types.len() - 1 - *var].eval()),
@@ -152,13 +171,19 @@ impl Term {
                     lhs.infer_type_with_ctx(variable_types),
                     rhs.infer_type_with_ctx(variable_types),
                 )?;
-                if let Binder { binder: BinderKind::Pi, ty, body } = lhs_type {
+                if let Binder {
+                    binder: BinderKind::Pi,
+                    ty,
+                    body,
+                } = lhs_type
+                {
                     // Check the type of the argument matches the type of the
                     // parameter.
                     if *ty != rhs_type {
-                        return Err(vec![
-                           format!("Argument type mismatch in {}: expected {}, found {}", self, ty, rhs_type)
-                        ]);
+                        return Err(vec![format!(
+                            "Argument type mismatch in {}: expected {}, found {}",
+                            self, ty, rhs_type
+                        )]);
                     }
                     Ok(Appl(
                         Rc::new(Binder {
@@ -167,17 +192,20 @@ impl Term {
                             body,
                         }),
                         Rc::clone(rhs),
-                    ))
+                    )
+                    .eval())
                 } else {
-                    Err(vec![
-                        format!(
-                            "Application of argument {} (type {}) to non-lambda {} (type {})",
-                            rhs, rhs_type, lhs, lhs_type,
-                        )
-                    ])
+                    Err(vec![format!(
+                        "Application of argument {} (type {}) to non-lambda {} (type {})",
+                        rhs, rhs_type, lhs, lhs_type,
+                    )])
                 }
             }
-            Binder { binder: BinderKind::Lam, ty, body } => {
+            Binder {
+                binder: BinderKind::Lam,
+                ty,
+                body,
+            } => {
                 // Get the type of the body.
                 variable_types.push(Rc::clone(ty));
                 let body_type = body.infer_type_with_ctx(variable_types)?;
@@ -192,7 +220,11 @@ impl Term {
                 lam_type.infer_type_with_ctx(variable_types)?;
                 Ok(lam_type.eval())
             }
-            Binder { binder: BinderKind::Pi, ty, body } => {
+            Binder {
+                binder: BinderKind::Pi,
+                ty,
+                body,
+            } => {
                 // Check that `ty`'s type could be infered.
                 ty.infer_type_with_ctx(variable_types)?;
                 // Get the type of the body.
@@ -203,9 +235,8 @@ impl Term {
                 Ok(body_type)
             }
             Prop => Ok(Type),
-            Type => Err(vec![
-                format!("Box's type cannot be inferred")
-            ]),
+            Type => Ok(Type),
+            // Type => Err(vec![format!("Type's type cannot be inferred")]),
         }
     }
 
@@ -273,28 +304,35 @@ fn generate_variable_name(variable_num: usize) -> String {
 
 struct TermPrint<'a> {
     term: &'a Term,
-    varialbe_depth: usize,
+    variable_depth: usize,
 }
 
 impl<'a> Display for TermPrint<'a> {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         use Term::*;
         match self.term {
-            Var(var) => write!(f, "{}", generate_variable_name(*var)),
-            Appl(lhs, rhs) => {
-                write!(f, "({} {})",
-                    TermPrint { term: lhs, ..*self },
-                    TermPrint { term: rhs, ..*self },
-                )
+            Var(var) => {
+                let var_name = generate_variable_name(self.variable_depth - 1 - *var);
+                write!(f, "{}", var_name)
             }
-            Binder { binder, ty, body } => {
-                write!(f, "({}{}: {}. {})",
-                    binder.to_string(),
-                    generate_variable_name(self.varialbe_depth),
-                    TermPrint { term: ty, ..*self },
-                    TermPrint { term: body, varialbe_depth: self.varialbe_depth + 1, ..*self },
-                )
-            }
+            Appl(lhs, rhs) => write!(
+                f,
+                "({} {})",
+                TermPrint { term: lhs, ..*self },
+                TermPrint { term: rhs, ..*self },
+            ),
+            Binder { binder, ty, body } => write!(
+                f,
+                "({}{}: {}. {})",
+                binder.to_string(),
+                generate_variable_name(self.variable_depth),
+                TermPrint { term: ty, ..*self },
+                TermPrint {
+                    term: body,
+                    variable_depth: self.variable_depth + 1,
+                    ..*self
+                },
+            ),
             Prop => write!(f, "Prop"),
             Type => write!(f, "Type"),
         }
@@ -303,6 +341,10 @@ impl<'a> Display for TermPrint<'a> {
 
 impl Display for Term {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        TermPrint { term: self, varialbe_depth: 0 }.fmt(f)
+        TermPrint {
+            term: self,
+            variable_depth: 0,
+        }
+        .fmt(f)
     }
 }
