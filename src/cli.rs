@@ -15,7 +15,7 @@ pub struct Cli {
 #[derive(Subcommand)]
 pub enum Action {
     Eval { filename: Option<PathBuf> },
-    Compile { filename: Option<PathBuf> },
+    Compile { filename: PathBuf },
 }
 
 pub fn parse_args() -> Cli {

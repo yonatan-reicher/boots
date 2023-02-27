@@ -2,13 +2,18 @@ mod c;
 mod cli;
 mod compile;
 mod core;
+mod global;
 mod name;
 mod parse;
 
 use cli::{parse_args, Action, Cli};
-use std::{io, path::PathBuf};
+use std::fs;
+use std::io;
+use std::path::PathBuf;
 
 use io::Result as ioRes;
+
+use crate::core::Term;
 
 mod repl {
     use super::*;
@@ -85,20 +90,38 @@ fn main() -> ioRes<()> {
             repl::run(|source| {
                 if source == "q" {
                     return Ok(false);
+                } else if source.chars().all(char::is_whitespace) {
+                    return Ok(true);
                 }
                 let expr = dbg!(parse::parse(&source).expect("Failed to parse"));
                 let typ = dbg!(expr.infer_type().expect("Failed to infer type"));
                 println!("Type is {}", typ);
-                let evaluated = expr.eval();
+                let evaluated = Term::eval_or(expr.into());
                 println!("{}", evaluated);
                 Ok(true)
             })
         }
-        Action::Eval { filename } => {
-            todo!()
+        Action::Eval {
+            filename: Some(filename),
+        } => {
+            let source = fs::read_to_string(filename)?;
+            let expr = parse::parse(&source).unwrap();
+            let ty = expr.infer_type().unwrap();
+            let evaluated = Term::eval_or(expr.into());
+            println!("{}", evaluated);
+            println!("Is of type:");
+            println!("{}", ty);
+            Ok(())
         }
         Action::Compile { filename } => {
-            todo!()
+            let source = fs::read_to_string(filename)?;
+            let expr = parse::parse(&source).unwrap();
+            let ty = expr.infer_type().unwrap();
+            let evaluated = Term::eval_or(expr.into());
+            println!("{}", evaluated);
+            let program = compile::compile(evaluated.into());
+            println!("{}", program.to_code());
+            Ok(())
         }
     }
 }

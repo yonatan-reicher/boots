@@ -3,6 +3,8 @@
  */
 mod indented_text;
 
+use std::rc::Rc;
+
 use crate::name::Name;
 use indented_text::IndentedText as I;
 
@@ -26,29 +28,31 @@ pub enum Include {
     Quote(String),
 }
 
+// TODO: Think about using PTypeExpr instead of just TypeExpr in the following datastructures.
+
 #[derive(Debug, Clone)]
 pub enum TopLevelDeclaration {
     Function(Function),
+    Typedef(TypeExpr, Name),
 }
 
 #[derive(Debug, Clone)]
 pub struct Function {
-    pub return_type: TypeExpr,
+    pub return_type: PTypeExpr,
     pub name: Name,
-    pub parameters: Vec<Parameter>,
+    pub parameters: Vec<(PTypeExpr, Name)>,
     pub body: Option<Block>,
-}
-
-#[derive(Debug, Clone)]
-pub struct Parameter {
-    pub name: Name,
-    pub type_expression: TypeExpr,
 }
 
 #[derive(Debug, Clone)]
 pub enum TypeExpr {
     Var(Name),
+    Ptr(PTypeExpr),
+    Struct(Vec<(PTypeExpr, Name)>),
+    FunctionPtr(PTypeExpr, Vec<PTypeExpr>),
 }
+
+pub type PTypeExpr = Rc<TypeExpr>;
 
 pub type Block = Vec<Statement>;
 
@@ -106,7 +110,7 @@ impl MultilineCode for Program {
             I::many_vec(
                 self.declarations
                     .iter()
-                    .map(|decl| decl.to_code_i())
+                    .map(|decl| decl.to_code_i().then(I::line_str("")))
                     .collect(),
             ),
         ])
@@ -121,8 +125,10 @@ impl Program {
 
 impl MultilineCode for TopLevelDeclaration {
     fn to_code_i(&self) -> I {
+        use TopLevelDeclaration::*;
         match self {
-            TopLevelDeclaration::Function(function) => function.to_code_i(),
+            Function(function) => function.to_code_i(),
+            Typedef(typ, name) => I::line(format!("typedef {};", typ.to_code_with_name(name))),
         }
     }
 }
@@ -136,18 +142,18 @@ impl MultilineCode for Function {
             &self
                 .parameters
                 .iter()
-                .map(|p| p.to_code())
+                .map(|(typ, name)| typ.to_code_with_name(name))
                 .collect::<Vec<_>>()
                 .join(", "),
         ))
         .then(if let Some(body) = &self.body {
             I::many([
-                I::AddToLastLine("{".into()),
+                I::AddToLastLine(" {".into()),
                 I::many_vec(body.iter().map(|stmt| stmt.to_code_i()).collect()).indent(),
                 I::line("}".into()),
             ])
         } else {
-            I::Empty
+            I::AddToLastLine(";".into())
         })
     }
 }
@@ -190,11 +196,7 @@ impl MultilineCode for Statement {
                 type_expression,
                 name,
                 initializer,
-            } => I::line(assignment_declaration_code(
-                type_expression,
-                name,
-                initializer,
-            )),
+            } => I::line(assignment_declaration_code(type_expression, name, initializer) + ";"),
         }
     }
 }
@@ -264,30 +266,53 @@ impl Expr {
 
 impl TypeExpr {
     pub fn to_code(&self) -> String {
+        use TypeExpr::*;
         match self {
-            TypeExpr::Var(name) => name.into(),
+            Var(name) => name.into(),
+            Struct(fields) => {
+                // Write to a buffer piece by piece.
+                let mut buf = String::new();
+                buf += "struct { ";
+                for (field_typ, field_name) in fields {
+                    buf += &field_typ.to_code_with_name(field_name);
+                    buf += "; ";
+                }
+                buf += "}";
+                buf
+            }
+            FunctionPtr(_, _) => todo!(),
+            Ptr(typ) => typ.to_code() + "*",
         }
     }
-}
 
-pub fn declaration_code(type_expr: &TypeExpr, name: &str) -> String {
-    match type_expr {
-        TypeExpr::Var(type_name) => {
-            format!("{} {}", type_name.as_ref(), name)
+    pub fn to_code_with_name(&self, name: &str) -> String {
+        use TypeExpr::*;
+        match self {
+            FunctionPtr(ret, params) => {
+                let mut buf = String::new();
+                buf += &ret.to_code();
+                buf += " (*";
+                buf += name;
+                buf += ")(";
+                for (i, param) in params.iter().enumerate() {
+                    if i != 0 {
+                        buf += ", ";
+                    }
+                    buf += &param.to_code();
+                }
+                buf += ")";
+                buf
+            }
+            Ptr(typ) => format!("{} *{name}", &typ.to_code()),
+            _ => format!("{} {}", self.to_code(), name),
         }
-    }
-}
-
-impl Parameter {
-    pub fn to_code(&self) -> String {
-        declaration_code(&self.type_expression, self.name.as_ref())
     }
 }
 
 fn assignment_declaration_code(type_expression: &TypeExpr, name: &str, rhs: &Expr) -> String {
     format!(
         "{} = {}",
-        declaration_code(type_expression, name),
+        type_expression.to_code_with_name(name),
         rhs.to_code()
     )
 }

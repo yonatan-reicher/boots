@@ -1,12 +1,13 @@
 use std::rc::Rc;
 
 use crate::core::*;
+use crate::name::Name;
 
 #[derive(Debug, Clone)]
 pub enum Error {
     TermNotFound,
     UnclosedParenthesis,
-    IdentifierNotFound(String),
+    IdentifierNotFound(Name),
     ExpectedIdentifierAfterFun,
     FoundKeywordAfterFun(Keyword),
     ExpectedColonAfterFunParameter,
@@ -73,13 +74,6 @@ impl<'source> Vars<'source> {
     }
 }
 
-fn variable_term(vars: &Vars, name: &str) -> Result<Term, Vec<Error>> {
-    vars.variable_index(name).map_or_else(
-        || Err(vec![Error::IdentifierNotFound(name.into())]),
-        |index| Ok(Term::Var(index)),
-    )
-}
-
 impl<'source> State<'source> {
     pub fn start() -> Self {
         Self {
@@ -135,6 +129,7 @@ fn term<'source>(source: &'source str, state: &mut State<'source>) -> Result<Ter
         let (first_atom, ret) = res_combine(first_atom, ret)?;
         return Ok(Term::Binder {
             binder: BinderKind::Pi,
+            param_name: "_".into(),
             ty: Rc::new(first_atom),
             body: Rc::new(ret),
         });
@@ -189,7 +184,7 @@ fn atom<'source>(
         term.map(Some)
     } else if let Some(ident) = identifier_or_keyword(source, state) {
         match ident {
-            IdentifierOrKeyword::Identifier(ident) => variable_term(&state.vars, &ident).map(Some),
+            IdentifierOrKeyword::Identifier(ident) => Ok(Some(Term::Var(Name::from_str(ident)))),
             IdentifierOrKeyword::Keyword(keyword) => match keyword {
                 Keyword::Fun => function_term(source, state).map(Some),
                 Keyword::Prop => Ok(Some(Term::Prop)),
@@ -234,6 +229,7 @@ fn function_term<'source>(
 
     Ok(Term::Binder {
         binder: BinderKind::Lam,
+        param_name: Name::from_str(parameter_name),
         ty: Rc::new(parameter_type_expr),
         body: Rc::new(body),
     })

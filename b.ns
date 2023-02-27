@@ -1,0 +1,1 @@
+fun y: prop => fun x: prop => y
