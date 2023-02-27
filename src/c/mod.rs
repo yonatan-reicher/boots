@@ -47,6 +47,7 @@ pub struct Function {
 #[derive(Debug, Clone)]
 pub enum TypeExpr {
     Var(Name),
+    StructVar(Name),
     Ptr(PTypeExpr),
     Struct(Vec<(PTypeExpr, Name)>),
     FunctionPtr(PTypeExpr, Vec<PTypeExpr>),
@@ -59,12 +60,13 @@ pub type Block = Vec<Statement>;
 #[derive(Debug, Clone)]
 pub enum Statement {
     Expr(Expr),
+    Assign(Expr, Expr),
     Return(Expr),
     If(Expr, Block, Option<Block>),
     While(Expr, Block),
     For(Expr, Expr, Expr, Block),
     Declaration {
-        type_expression: TypeExpr,
+        type_expression: PTypeExpr,
         name: Name,
         initializer: Expr,
     },
@@ -77,7 +79,9 @@ pub enum Expr {
     Int(i32),
     Unary(UnaryOp, Box<Expr>),
     Binary(BinaryOp, Box<Expr>, Box<Expr>),
-    Cast(TypeExpr, Box<Expr>),
+    Cast(PTypeExpr, Box<Expr>),
+    SizeOf(PTypeExpr),
+    Dot(Box<Expr>, Name),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -197,6 +201,10 @@ impl MultilineCode for Statement {
                 name,
                 initializer,
             } => I::line(assignment_declaration_code(type_expression, name, initializer) + ";"),
+            Statement::Assign(left, right) => {
+                // TODO: Check that left can be assigned.
+                I::line(format!("{} = {};", left.to_code(), right.to_code()))
+            }
         }
     }
 }
@@ -260,6 +268,12 @@ impl Expr {
                 code.push_str(")");
                 code
             }
+            Expr::Dot(e, name) => {
+                e.to_code() + "." + name
+            }
+            Expr::SizeOf(type_expr) => {
+                format!("sizeof({})", type_expr.to_code())
+            }
         }
     }
 }
@@ -269,6 +283,7 @@ impl TypeExpr {
         use TypeExpr::*;
         match self {
             Var(name) => name.into(),
+            StructVar(name) => "struct ".to_string() + name.as_ref(),
             Struct(fields) => {
                 // Write to a buffer piece by piece.
                 let mut buf = String::new();

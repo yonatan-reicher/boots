@@ -13,14 +13,45 @@ use std::rc::Rc;
 #[derive(Debug, Default)]
 struct NameGen(usize);
 
+#[derive(Debug, Default, Clone)]
+enum NameOptions {
+    /// For variable names.
+    #[default]
+    Var,
+    /// For struct types of closures.
+    ClosureStruct,
+    /// For call functions that call closures.
+    Call,
+    /// For make functions that make closures.
+    Make,
+    /// For implementation functions in closures.
+    Impl,
+    /// For variables pointing to a generic closure.
+    ClosurePtrType,
+}
+
 impl NameGen {
     pub fn new() -> Self {
         Self::default()
     }
 
-    pub fn next(&mut self) -> Name {
+    pub fn next(&mut self, options: NameOptions) -> Name {
         self.0 += 1;
-        Name::Rc(Rc::from(format!("var{}", self.0 - 1)))
+        Name::Rc(Rc::from(format!("{}{}", options.prefix(), self.0 - 1)))
+    }
+}
+
+impl NameOptions {
+    pub fn prefix(&self) -> &'static str {
+        use NameOptions::*;
+        match self {
+            Var => "var",
+            ClosureStruct => "closure",
+            Call => "call",
+            Make => "make",
+            Impl => "impl",
+            ClosurePtrType => "closurePtr",
+        }
     }
 }
 
@@ -57,16 +88,23 @@ impl Context {
 
 fn compile_closure_declarations(closure: &Closure) -> [c::TopLevelDeclaration; 4] {
     let struct_ptr_type: c::PTypeExpr = closure_type(closure).into();
+    let struct_ptr_type_with_struct_var: c::PTypeExpr =
+        closure_type_with_struct_var(closure).into();
+
     [
+        // Struct.
         c::TopLevelDeclaration::Typedef(
-            compile_closure_struct(closure, struct_ptr_type.clone()),
+            compile_closure_struct(closure, struct_ptr_type_with_struct_var),
             closure.struct_name.clone(),
         ),
+        // Impl.
         c::TopLevelDeclaration::Function(compile_closure_impl_function(closure)),
+        // Call.
         c::TopLevelDeclaration::Function(compile_closure_call_function(
             closure,
             struct_ptr_type.clone(),
         )),
+        // Make.
         c::TopLevelDeclaration::Function(compile_closure_make_function(closure, struct_ptr_type)),
     ]
 }
@@ -74,6 +112,11 @@ fn compile_closure_declarations(closure: &Closure) -> [c::TopLevelDeclaration; 4
 // TODO: Rename
 fn closure_type(closure: &Closure) -> c::TypeExpr {
     c::TypeExpr::Ptr(c::TypeExpr::Var(closure.struct_name.clone()).into())
+}
+
+// TODO: Rename
+fn closure_type_with_struct_var(closure: &Closure) -> c::TypeExpr {
+    c::TypeExpr::Ptr(c::TypeExpr::StructVar(closure.struct_name.clone()).into())
 }
 
 fn compile_closure_struct(closure: &Closure, struct_ptr_type: c::PTypeExpr) -> c::TypeExpr {
@@ -114,11 +157,37 @@ fn compile_closure_call_function(closure: &Closure, struct_ptr_type: c::PTypeExp
 }
 
 fn compile_closure_make_function(closure: &Closure, struct_ptr_type: c::PTypeExpr) -> c::Function {
+    let name: Name = "x".into();
+    let var = c::Expr::Var(name.clone());
     c::Function {
-        return_type: struct_ptr_type,
+        return_type: struct_ptr_type.clone(),
         name: closure.make_name.clone(),
         parameters: closure.body.parameters[1..].iter().cloned().collect(),
-        body: None, // TODO: Give a body.
+        body: Some(vec![
+            // Malloc the closure struct.
+            c::Statement::Declaration {
+                type_expression: struct_ptr_type.clone(),
+                name: name.clone(),
+                initializer: c::Expr::Cast(
+                    struct_ptr_type,
+                    c::Expr::Call(
+                        c::Expr::Var("malloc".into()).into(),
+                        vec![c::Expr::SizeOf(
+                            c::TypeExpr::Var(closure.struct_name.clone()).into(),
+                        )],
+                    )
+                    .into(),
+                ),
+            },
+            // Initialize the fields.
+            c::Statement::Assign(
+                c::Expr::Dot(var.clone().into(), "call".into()),
+                c::Expr::Var(closure.call_name.clone()).into(),
+            ),
+            // TODO: assign the rest of the fields of "ret" (closure.parameters[1..]).
+            // Return the pointer.
+            c::Statement::Return(var),
+        ]),
     }
 }
 
@@ -133,7 +202,7 @@ pub fn compile(term: PTerm) -> c::Program {
     let expr = compile_expr(term, &mut context);
 
     let body = vec![c::Statement::Declaration {
-        type_expression: term_type_expr,
+        type_expression: term_type_expr.into(),
         name: "output".into(),
         initializer: expr,
     }];
@@ -196,7 +265,7 @@ fn compile_expr(term: PTerm, con: &mut Context) -> c::Expr {
             let body_c_type: c::PTypeExpr = compile_type_expr(&body_type, con).unwrap().into();
 
             // Compile the body to an expression.
-            let param_c_name = con.name_gen.next();
+            let param_c_name = con.name_gen.next(NameOptions::Var);
             let body_c_expr = with_variable!(con.n_vars, (param_name, ty.clone()), {
                 with_variable!(
                     con.c_vars,
@@ -223,11 +292,11 @@ fn compile_expr(term: PTerm, con: &mut Context) -> c::Expr {
 
             // Define a closure.
             let closure = Closure {
-                struct_name: con.name_gen.next(),
-                call_name: con.name_gen.next(),
-                make_name: con.name_gen.next(),
+                struct_name: con.name_gen.next(NameOptions::ClosureStruct),
+                call_name: con.name_gen.next(NameOptions::Call),
+                make_name: con.name_gen.next(NameOptions::Make),
                 body: c::Function {
-                    name: con.name_gen.next(),
+                    name: con.name_gen.next(NameOptions::Impl),
                     return_type: body_c_type.clone(),
                     parameters,
                     body: Some(vec![c::Statement::Return(body_c_expr)]),
@@ -264,7 +333,7 @@ fn compile_type_expr(term: &Term, con: &mut Context) -> Result<c::TypeExpr, ()> 
                 .get(&(ty.clone(), body.clone()))
                 .cloned()
                 .unwrap_or_else(|| {
-                    let name = con.name_gen.next();
+                    let name = con.name_gen.next(NameOptions::ClosurePtrType);
                     con.function_c_types
                         .insert((ty.clone(), body.clone()), name.clone());
                     name
