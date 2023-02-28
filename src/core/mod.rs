@@ -284,7 +284,10 @@ impl Term {
                     body, param_name, ..
                 } = lhs.as_ref()
                 {
-                    return Some(Self::substitute_or(body.clone(), param_name, rhs.clone()));
+                    // Substitute the parameter inside the body and then eval again.
+                    let ret = Self::substitute_or(body.clone(), param_name, rhs.clone());
+                    let ret = Self::eval_or(ret);
+                    return Some(ret);
                 }
 
                 if lhs_new.is_none() && rhs_new.is_none() {
