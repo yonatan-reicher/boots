@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::fmt::{self, Display, Formatter};
 use std::rc::Rc;
 
@@ -23,6 +22,8 @@ impl Display for BinderKind {
 pub type VarIdent = Name;
 
 pub type PTerm = Rc<Term>;
+
+pub type TypeContext = std::collections::HashMap<Name, PTerm>;
 
 /**
  * The syntax of our calculus. Notice that types are represented in the same way
@@ -327,7 +328,7 @@ impl Term {
 
     pub fn infer_type_with_ctx(
         &self,
-        variable_types: &mut HashMap<Name, PTerm>,
+        variable_types: &mut TypeContext,
     ) -> Result<PTerm, Vec<String>> {
         use Term::*;
         match self {
@@ -409,7 +410,7 @@ impl Term {
     }
 
     pub fn infer_type(&self) -> Result<PTerm, Vec<String>> {
-        let mut variable_types = HashMap::new();
+        let mut variable_types = TypeContext::new();
         let res = self.infer_type_with_ctx(&mut variable_types);
         assert!(variable_types.is_empty());
         res

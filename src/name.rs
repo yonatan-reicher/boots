@@ -59,6 +59,12 @@ impl From<Rc<str>> for Name {
     }
 }
 
+impl From<String> for Name {
+    fn from(str: String) -> Self {
+        Rc(str.into())
+    }
+}
+
 impl Debug for Name {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         Debug::fmt(self.as_ref(), f)

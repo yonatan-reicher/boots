@@ -1,5 +1,6 @@
-use crate::c::{self, Expr::Var};
-use crate::core::{BinderKind, PTerm, Term};
+use crate::c;
+use crate::c::combine_traits::*;
+use crate::core::{BinderKind, PTerm, Term, TypeContext};
 use crate::global::*;
 use crate::name::Name;
 use std::collections::HashMap;
@@ -55,9 +56,8 @@ impl NameOptions {
     }
 }
 
+/// A mapping from a C-Var name to a C-Var type and it's N-Var name.
 type CVars = HashMap<Name, (c::PTypeExpr, Name)>;
-
-type NVars = HashMap<Name, PTerm>;
 
 type Closures = Vec<Closure>;
 
@@ -74,7 +74,7 @@ type FunctionCTypes = HashMap<(PTerm, PTerm), Name>;
 #[derive(Debug, Default)]
 struct Context {
     c_vars: CVars,
-    n_vars: NVars,
+    n_vars: TypeContext,
     closures: Closures,
     function_c_types: FunctionCTypes,
     name_gen: NameGen,
@@ -111,18 +111,19 @@ fn compile_closure_declarations(closure: &Closure) -> [c::TopLevelDeclaration; 4
 
 // TODO: Rename
 fn closure_type(closure: &Closure) -> c::TypeExpr {
-    c::TypeExpr::Ptr(c::TypeExpr::Var(closure.struct_name.clone()).into())
+    closure.struct_name.clone().type_var().ptr()
 }
 
 // TODO: Rename
 fn closure_type_with_struct_var(closure: &Closure) -> c::TypeExpr {
-    c::TypeExpr::Ptr(c::TypeExpr::StructVar(closure.struct_name.clone()).into())
+    closure.struct_name.clone().struct_type_var().ptr()
 }
 
 fn compile_closure_struct(closure: &Closure, struct_ptr_type: c::PTypeExpr) -> c::TypeExpr {
     c::TypeExpr::Struct({
         // Create a vector of fields to put in the struct type.
-        // Reminder: The struct has the call function ptr as the first fields and all the captured values as the rest.
+        // Reminder: The struct has the reference counter and call function ptr
+        // as the first fields and all the captured values as the rest.
 
         let closure_parameter = &closure.body.parameters[0];
         let captured_values_parameters = &closure.body.parameters[1..];
@@ -134,7 +135,10 @@ fn compile_closure_struct(closure: &Closure, struct_ptr_type: c::PTypeExpr) -> c
         )
         .into();
 
-        let mut fields = vec![(call_type, "call".into())];
+        let mut fields = vec![
+            ("int".type_var().into(), "rc".into()),
+            (call_type, "call".into()),
+        ];
         fields.extend(captured_values_parameters.iter().cloned());
         fields
     })
@@ -148,8 +152,8 @@ fn compile_closure_call_function(closure: &Closure, struct_ptr_type: c::PTypeExp
     // Make the body of the call function.
     // We want to take the implementation function of the closure, and apply it
     // the correct parameters, as they are stored in closure.body.parameters
-    let this_var = Var("self".into());
-    let impl_function = Var(closure.body.name.clone());
+    let this_var = "self".var();
+    let impl_function = closure.body.name.clone().var();
 
     let call_the_impl = c::Expr::Call(
         impl_function.into(),
@@ -160,7 +164,7 @@ fn compile_closure_call_function(closure: &Closure, struct_ptr_type: c::PTypeExp
             .enumerate()
             .map(|(i, (_, name))| {
                 if i == 0 {
-                    Var(name.clone())
+                    name.clone().var()
                 } else {
                     c::Expr::Dot(this_var.clone().into(), name.clone())
                 }
@@ -177,48 +181,38 @@ fn compile_closure_call_function(closure: &Closure, struct_ptr_type: c::PTypeExp
             (struct_ptr_type.clone(), "self".into()),
             closure.body.parameters[0].clone(),
         ],
-        body: Some(body), // TODO: Give a body.
+        body: Some(body),
     }
 }
 
 fn compile_closure_make_function(closure: &Closure, struct_ptr_type: c::PTypeExpr) -> c::Function {
     let ret_name: Name = "ret".into();
-    let ret_var = Var(ret_name.clone());
+    let ret_var = ret_name.clone().var();
 
     // Make some statements to put in the body.
     // closureX* ret = (closureX*)malloc(sizeof(closureX));
-    let declare_ret = c::Statement::Declaration {
-        type_expression: struct_ptr_type.clone(),
-        name: ret_name.clone(),
-        initializer: c::Expr::Cast(
-            struct_ptr_type.clone(),
-            c::Expr::Call(
-                Var("malloc".into()).into(),
-                vec![c::Expr::SizeOf(
-                    c::TypeExpr::Var(closure.struct_name.clone()).into(),
-                )],
-            )
-            .into(),
-        ),
-    };
+    let declare_ret = "malloc"
+        .var()
+        .call([closure.struct_name.clone().type_var().sizeof()])
+        .cast(struct_ptr_type.clone())
+        .variable(ret_name, struct_ptr_type.clone());
+    // ret.rc = 1;
+    let assign_rc = ret_var.clone().dot("rc").assign(1.literal());
     // ret.call = callX;
-    let assign_call = c::Statement::Assign(
-        c::Expr::Dot(ret_var.clone().into(), "call".into()),
-        Var(closure.call_name.clone()).into(),
-    );
+    let assign_call = ret_var
+        .clone()
+        .dot("call")
+        .assign(closure.call_name.clone().var());
     // ret.fieldX = parameterX;
-    let assign_fields = closure.body.parameters[1..].iter().map(|(_, name)| {
-        c::Statement::Assign(
-            c::Expr::Dot(ret_var.clone().into(), name.clone()).into(),
-            Var(name.clone()).into(),
-        )
-    });
+    let assign_fields = closure.body.parameters[1..]
+        .iter()
+        .map(|(_, name)| ret_var.clone().dot(name.clone()).assign(name.clone().var()));
 
     // Combine the statemets into a block.
-    let body: c::Block = [declare_ret, assign_call]
+    let body: c::Block = [declare_ret, assign_rc, assign_call]
         .into_iter()
         .chain(assign_fields)
-        .chain([c::Statement::Return(ret_var.clone())])
+        .chain([ret_var.clone().ret()])
         .collect();
 
     c::Function {
@@ -228,6 +222,44 @@ fn compile_closure_make_function(closure: &Closure, struct_ptr_type: c::PTypeExp
         body: Some(body),
     }
 }
+
+fn compile_clone(var_c_name: Name, var_n_type: &Term) -> c::Expr {
+    if let Term::Binder {
+        binder: BinderKind::Pi,
+        ..
+    } = var_n_type
+    {
+        todo!();
+    }
+
+    todo!();
+}
+
+fn compile_destructor(var_name: Name, var_type: &Term) -> c::Block {
+    todo!()
+}
+
+/*
+fn compile_let(name: Name, term: PTerm, body: PTerm, context: &mut Context) -> (c::Block, c::Expr, c::Block) {
+    let term_type = term.infer_type_with_ctx(&mut context.n_vars).expect(&format!("Cannot infer type of {term}!"));
+    let type_expression = compile_type_expr(&term_type, context).expect(&format!("Cannot compile {term_type}!")).into();
+    let expression = compile_expr(term, context);
+    let name = context.name_gen.next(NameOptions::Var);
+
+    let declare = c::Statement::Declaration { type_expression, name, initializer: expression };
+    let dispose = compile_destructor(name, &term_type);
+
+    with_variable!(
+        context.n_vars,
+    );
+
+    block.insert(0, declare);
+    // Dispose of the variable at the end of the scope.
+    block.extend(compile_distructor_of_type(term_type));
+
+    todo!()
+}
+*/
 
 pub fn compile(term: PTerm) -> c::Program {
     let term_type = term.infer_type().expect("Still no error handling...");
@@ -254,13 +286,21 @@ pub fn compile(term: PTerm) -> c::Program {
 
     let mut declarations = Vec::<c::TopLevelDeclaration>::new();
 
-    for closure in &context.closures {
-        declarations.extend(compile_closure_declarations(closure));
+    // Declare context.function_c_types.
+    let function_c_types = context.function_c_types.clone();
+    for ((arg_type, ret_type), name) in function_c_types {
+        let arg_type_expr = compile_type_expr(&arg_type, &mut context).unwrap();
+        let ret_type_expr = compile_type_expr(&ret_type, &mut context).unwrap();
+
+        declarations.push(c::TopLevelDeclaration::Typedef(
+            ret_type_expr.function_ptr([arg_type_expr.into()]),
+            name.clone(),
+        ))
     }
 
-    // TODO: Also declare context.function_c_types.
-    for ((left, right), name) in &context.function_c_types {
-        // declaration.extend(c::TopLevelDeclaration::Typedef(todo!(), todo!()))
+    // Declare the closures.
+    for closure in &context.closures {
+        declarations.extend(compile_closure_declarations(closure));
     }
 
     // Add the main function.
@@ -281,16 +321,13 @@ fn compile_expr(term: PTerm, con: &mut Context) -> c::Expr {
     let term = Term::eval_or(term);
     let term_type = term.infer_type_with_ctx(&mut con.n_vars).unwrap();
     match term.as_ref() {
-        Term::Var(name) => Var(con.c_vars[name].1.clone()),
+        Term::Var(name) => con.c_vars[name].1.clone().var(),
         Term::Appl(t1, t2) =>
         // TODO: This is incorrect!
         // Should first save the closure pointer (lhs) in a variable,
         // then pass it to it's .call field along with the argument (rhs!).
         {
-            c::Expr::Call(
-                Box::new(compile_expr(t1.clone(), con)),
-                vec![compile_expr(t2.clone(), con)],
-            )
+            compile_expr(t1.clone(), con).call([compile_expr(t2.clone(), con)])
         }
         Term::Binder {
             binder: BinderKind::Lam,
@@ -331,7 +368,7 @@ fn compile_expr(term: PTerm, con: &mut Context) -> c::Expr {
             let captured_variable_calls: Vec<_> = parameters
                 .iter()
                 .skip(1) // Remove the closure parameter
-                .map(|p| Var(p.1.clone()))
+                .map(|p| p.1.clone().var())
                 .collect();
 
             // Define a closure.
@@ -350,10 +387,10 @@ fn compile_expr(term: PTerm, con: &mut Context) -> c::Expr {
             con.closures.push(closure);
 
             // Return a variable referencing the function.
-            c::Expr::Call(Var(closure_make_name).into(), captured_variable_calls)
+            c::Expr::Call(closure_make_name.var().into(), captured_variable_calls)
         }
-        Term::Prop => Var("prop".into()),
-        Term::Type => Var("type".into()),
+        Term::Prop => "prop".var(),
+        Term::Type => "type".var(),
         _ => todo!(),
     }
 }

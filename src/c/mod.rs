@@ -2,6 +2,7 @@
  * Contains an types and functions for emiting C code.
  */
 mod indented_text;
+pub mod combine_traits;
 
 use std::rc::Rc;
 
@@ -295,11 +296,12 @@ impl TypeExpr {
                 buf += "}";
                 buf
             }
-            FunctionPtr(_, _) => todo!(),
+            FunctionPtr(_, _) => self.to_code_with_name(""),
             Ptr(typ) => typ.to_code() + "*",
         }
     }
 
+    // TODO: Add a `to_code_with_type_name` method almost identical.
     pub fn to_code_with_name(&self, name: &str) -> String {
         use TypeExpr::*;
         match self {
