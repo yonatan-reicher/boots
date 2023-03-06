@@ -1,0 +1,16 @@
+let 
+g (n: int) (vec n int) : vec (n + 1) int
+g n list = Vec.append list [inc n] |> Vec.reverse
+g n list = [inc n] |> Vec.append list |> Vec.reverse
+g n list =
+    list |> l => Vec.append l [inc n]
+        |> Vec.reverse
+        in g 10 : vec 10 int -> vec 11 int
+
+        g : int -> int -> int
+        g = x => y => x + y
+
+        f : (a: Type) -> (x: a) -> (y: a) -> a
+        f = _ => x => y => x
+
+
