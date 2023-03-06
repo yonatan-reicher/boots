@@ -2,14 +2,26 @@
 //! it easy to combine C expressions and statements to bigger expression and
 //! statements.
 
-use crate::c::{Expr, PTypeExpr, Statement, TypeExpr};
+use crate::c::{BinaryOp, Block, Expr, PTypeExpr, Statement, TypeExpr};
 use crate::name::Name;
 
 /// Implements functions for making expressions out of other things.
 pub trait CombExpr1: Into<Box<Expr>> {
     /// Makes an access expression.
-    fn dot(self, field: impl Into<Name>) -> Expr {
-        Expr::Dot(self.into(), field.into())
+    fn arrow(self, field: impl Into<Name>) -> Expr {
+        Expr::Arrow(self.into(), field.into())
+    }
+
+    fn inc(self) -> Expr {
+        Expr::Inc(self.into())
+    }
+
+    fn dec(self) -> Expr {
+        Expr::Dec(self.into())
+    }
+
+    fn eq(self, other: impl Into<Box<Expr>>) -> Expr {
+        Expr::Binary(BinaryOp::Eq, self.into(), other.into())
     }
 
     /// Makes a call expression to this function.
@@ -35,7 +47,7 @@ pub trait CombExpr2: Into<Expr> {
     }
 
     /// Makes this expresssion an expression-statement.
-    fn expr_statement(self) -> Statement {
+    fn stmt(self) -> Statement {
         Statement::Expr(self.into())
     }
 
@@ -44,12 +56,17 @@ pub trait CombExpr2: Into<Expr> {
         Statement::Assign(self.into(), expr.into())
     }
 
+    /// Assign this expression to a new variable!
     fn variable(self, name: impl Into<Name>, type_expr: impl Into<PTypeExpr>) -> Statement {
         Statement::Declaration {
             type_expression: type_expr.into(),
             name: name.into(),
             initializer: self.into(),
         }
+    }
+
+    fn if_then(self, true_block: impl Into<Block>) -> Statement {
+        Statement::If(self.into(), true_block.into(), None)
     }
 }
 

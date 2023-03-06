@@ -35,6 +35,7 @@ pub enum Include {
 pub enum TopLevelDeclaration {
     Function(Function),
     Typedef(TypeExpr, Name),
+    Struct(Name, Vec<(PTypeExpr, Name)>),
 }
 
 #[derive(Debug, Clone)]
@@ -82,7 +83,10 @@ pub enum Expr {
     Binary(BinaryOp, Box<Expr>, Box<Expr>),
     Cast(PTypeExpr, Box<Expr>),
     SizeOf(PTypeExpr),
+    Arrow(Box<Expr>, Name),
     Dot(Box<Expr>, Name),
+    Inc(Box<Expr>),
+    Dec(Box<Expr>),
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -133,7 +137,8 @@ impl MultilineCode for TopLevelDeclaration {
         use TopLevelDeclaration::*;
         match self {
             Function(function) => function.to_code_i(),
-            Typedef(typ, name) => I::line(format!("typedef {};", typ.to_code_with_name(name))),
+            Typedef(typ, name) => I::line(format!("typedef {};", typ.to_code_with_name_typedef(name))),
+            Struct(name, fields) => I::line(struct_code(Some(name), fields)),
         }
     }
 }
@@ -269,39 +274,60 @@ impl Expr {
                 code.push_str(")");
                 code
             }
+            Expr::Arrow(e, name) => {
+                e.to_code() + "->" + name
+            }
             Expr::Dot(e, name) => {
                 e.to_code() + "." + name
             }
             Expr::SizeOf(type_expr) => {
                 format!("sizeof({})", type_expr.to_code())
             }
+            Expr::Inc(e) => {
+                e.to_code() + "++"
+            }
+            Expr::Dec(e) => {
+                e.to_code() + "--"
+            }
         }
     }
 }
 
+fn struct_code(struct_type_name: Option<&str>, fields: &Vec<(PTypeExpr, Name)>) -> String {
+    // Write to a buffer piece by piece.
+    let mut buf = String::new();
+
+    buf += "struct ";
+    if let Some(name) = struct_type_name {
+        buf += &name;
+        buf += " ";
+    } 
+    buf += "{ ";
+
+    for (field_typ, field_name) in fields {
+        buf += &field_typ.to_code_with_name(field_name);
+        buf += "; ";
+    }
+
+    buf += "}";
+    buf
+}
+
 impl TypeExpr {
+    /// Convert a type expression to a string. Does not take names into account.
     pub fn to_code(&self) -> String {
         use TypeExpr::*;
         match self {
             Var(name) => name.into(),
             StructVar(name) => "struct ".to_string() + name.as_ref(),
-            Struct(fields) => {
-                // Write to a buffer piece by piece.
-                let mut buf = String::new();
-                buf += "struct { ";
-                for (field_typ, field_name) in fields {
-                    buf += &field_typ.to_code_with_name(field_name);
-                    buf += "; ";
-                }
-                buf += "}";
-                buf
-            }
+            Struct(fields) => struct_code(None, fields),
             FunctionPtr(_, _) => self.to_code_with_name(""),
             Ptr(typ) => typ.to_code() + "*",
         }
     }
 
-    // TODO: Add a `to_code_with_type_name` method almost identical.
+    /// Convert a type expression to a string, of a value with a name such as
+    /// a variable or a parameter.
     pub fn to_code_with_name(&self, name: &str) -> String {
         use TypeExpr::*;
         match self {
@@ -324,6 +350,24 @@ impl TypeExpr {
             _ => format!("{} {}", self.to_code(), name),
         }
     }
+
+    /// Convert a type expression to a string, of a value with a name for a
+    /// typedef.
+    /// The difference is that in a typedef, a struct needs to get the name
+    /// while in a variable declaration, it should not.
+    ///
+    /// Example:
+    /// ```c
+    /// typedef struct foo { int bar; } foo;
+    /// struct { int bar; } my_foo; // No name after struct keyword!
+    /// ```
+    pub fn to_code_with_name_typedef(&self, name: &str) -> String {
+        use TypeExpr::*;
+        match self {
+            Struct(fields) => struct_code(Some(name), fields) + " " + name,
+            _ => self.to_code_with_name(name),
+        }
+    }
 }
 
 fn assignment_declaration_code(type_expression: &TypeExpr, name: &str, rhs: &Expr) -> String {
@@ -344,3 +388,16 @@ macro_rules! some_try {
     }};
 }
 */
+
+// Implement some conversions.
+impl From<Name> for Expr {
+    fn from(name: Name) -> Self {
+        Expr::Var(name)
+    }
+}
+
+impl From<Name> for TypeExpr {
+    fn from(name: Name) -> Self {
+        TypeExpr::Var(name)
+    }
+}

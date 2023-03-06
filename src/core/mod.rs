@@ -1,7 +1,7 @@
 use std::fmt::{self, Display, Formatter};
 use std::rc::Rc;
 
-use crate::global::with_variable;
+use crate::global::{with_variable, extend};
 use crate::name::Name;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -41,11 +41,6 @@ pub enum Term {
     },
     Prop,
     Type,
-}
-
-fn extend<T, I: IntoIterator<Item = T>>(mut left: Vec<T>, right: I) -> Vec<T> {
-    left.extend(right);
-    left
 }
 
 fn result_combine<T, U, E>(
