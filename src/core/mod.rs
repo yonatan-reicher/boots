@@ -1,7 +1,7 @@
 use std::fmt::{self, Display, Formatter};
 use std::rc::Rc;
 
-use crate::global::{with_variable, extend};
+use crate::global::{extend, with_variable};
 use crate::name::Name;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -521,6 +521,12 @@ impl Display for Term {
         match self {
             Var(name) => name.fmt(f),
             Appl(lhs, rhs) => write!(f, "({} {})", lhs, rhs),
+            Binder {
+                binder,
+                param_name,
+                ty,
+                body,
+            } if body.free_vars().iter().all(|x| x != param_name) => write!(f, "({ty} -> {body})",),
             Binder {
                 binder,
                 param_name,

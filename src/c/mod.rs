@@ -138,7 +138,7 @@ impl MultilineCode for TopLevelDeclaration {
         match self {
             Function(function) => function.to_code_i(),
             Typedef(typ, name) => I::line(format!("typedef {};", typ.to_code_with_name_typedef(name))),
-            Struct(name, fields) => I::line(struct_code(Some(name), fields)),
+            Struct(name, fields) => I::line(struct_code(Some(name), fields)).then(I::AddToLastLine(";".into())),
         }
     }
 }
@@ -181,16 +181,16 @@ impl MultilineCode for Statement {
                 I::line(format!("if ({}) {{", cond.to_code())),
                 I::indent(block_code(then)),
                 if let Some(else_) = else_ {
-                    I::many([I::line_str("}} else {{"), I::indent(block_code(else_))])
+                    I::many([I::line_str("} else {"), I::indent(block_code(else_))])
                 } else {
                     I::Empty
                 },
-                I::line_str("}}"),
+                I::line_str("}"),
             ]),
             Statement::While(cond, body) => I::many([
                 I::line(format!("while ({}) {{", cond.to_code())),
                 I::indent(block_code(body)),
-                I::line_str("}}"),
+                I::line_str("}"),
             ]),
             Statement::For(start, cond, inc, body) => I::many([
                 I::line(format!(
@@ -200,7 +200,7 @@ impl MultilineCode for Statement {
                     inc.to_code(),
                 )),
                 I::indent(block_code(body)),
-                I::line_str("}}"),
+                I::line_str("}"),
             ]),
             Statement::Declaration {
                 type_expression,

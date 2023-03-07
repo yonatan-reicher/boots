@@ -27,6 +27,8 @@ enum NameOptions {
     Make,
     /// For implementation functions in closures.
     Impl,
+    /// For closure drop function names (functions that free the closure).
+    Drop,
     /// For variables pointing to a generic closure.
     ClosureHeadType,
 }
@@ -51,6 +53,7 @@ impl NameOptions {
             Call => "call",
             Make => "make",
             Impl => "impl",
+            Drop => "drop",
             ClosureHeadType => "closureHead",
         }
     }
@@ -66,6 +69,7 @@ struct Closure {
     struct_name: Name,
     call_name: Name,
     make_name: Name,
+    drop_name: Name,
     body: c::Function,
 }
 
@@ -86,72 +90,75 @@ impl Context {
     }
 }
 
+fn is_reference_counted(typ: &Term) -> bool {
+    match typ {
+        Term::Binder {
+            binder: BinderKind::Pi,
+            ..
+        } => true,
+        _ => false,
+    }
+}
+
 /// Returns declarations that code anything the closure needs.
 ///
 /// Returns a tuple with names to forward declare (currently only the struct
 /// name) and the declarations.
-fn compile_closure_declarations(closure: &Closure) -> (Name, [c::TopLevelDeclaration; 4]) {
-    let struct_ptr_type: c::PTypeExpr = closure_type(closure).into();
+fn compile_closure_declarations(closure: &Closure) -> (Name, [c::TopLevelDeclaration; 5]) {
+    use c::TopLevelDeclaration::Function;
+
+    let struct_ptr_type: c::PTypeExpr = closure.struct_name.clone().type_var().ptr().into();
 
     (
         closure.struct_name.clone(), // Currently, only forward declare the struct name.
         [
             // Struct.
-            c::TopLevelDeclaration::Typedef(
-                compile_closure_struct(closure, struct_ptr_type.clone()),
-                closure.struct_name.clone(),
-            ),
-            // Impl.
-            c::TopLevelDeclaration::Function(compile_closure_impl_function(closure)),
-            // Call.
-            c::TopLevelDeclaration::Function(compile_closure_call_function(
-                closure,
-                struct_ptr_type.clone(),
-            )),
-            // Make.
-            c::TopLevelDeclaration::Function(compile_closure_make_function(
-                closure,
-                struct_ptr_type,
-            )),
+            closure_struct(closure, struct_ptr_type.clone()),
+            // Function.
+            Function(closure_impl_function(closure)),
+            Function(closure_call_function(closure, struct_ptr_type.clone())),
+            Function(closure_make_function(closure, struct_ptr_type.clone())),
+            Function(closure_drop_function(closure, struct_ptr_type.clone())),
         ],
     )
 }
 
-// TODO: Rename
-fn closure_type(closure: &Closure) -> c::TypeExpr {
-    closure.struct_name.clone().type_var().ptr()
+fn closure_call_type(closure_ptr_type: c::PTypeExpr, ret_type: c::PTypeExpr, arg_type: c::PTypeExpr) -> c::TypeExpr {
+    ret_type.function_ptr([closure_ptr_type, arg_type])
 }
 
-fn compile_closure_struct(closure: &Closure, struct_ptr_type: c::PTypeExpr) -> c::TypeExpr {
-    c::TypeExpr::Struct({
-        // Create a vector of fields to put in the struct type.
-        // Reminder: The struct has the reference counter and call function ptr
-        // as the first fields and all the captured values as the rest.
+fn closure_struct(closure: &Closure, struct_ptr_type: c::PTypeExpr) -> c::TopLevelDeclaration {
+    // Create a vector of fields to put in the struct type.
+    // Reminder: The struct has the reference counter and call function ptr
+    // as the first fields and all the captured values as the rest.
 
-        let closure_parameter = &closure.body.parameters[0];
-        let captured_values_parameters = &closure.body.parameters[1..];
+    let closure_parameter = &closure.body.parameters[0];
+    let captured_values_parameters = &closure.body.parameters[1..];
 
-        // The type of the call field.
-        let call_type: c::PTypeExpr = c::TypeExpr::FunctionPtr(
-            closure.body.return_type.clone(),
-            vec![struct_ptr_type.clone(), closure_parameter.0.clone()],
-        )
-        .into();
+    // The type of the call field.
+    let call_type: c::PTypeExpr = c::TypeExpr::FunctionPtr(
+        closure.body.return_type.clone(),
+        vec![struct_ptr_type.clone(), closure_parameter.0.clone()],
+    )
+    .into();
 
-        let mut fields = vec![
-            ("int".type_var().into(), "rc".into()),
-            (call_type, "call".into()),
-        ];
-        fields.extend(captured_values_parameters.iter().cloned());
-        fields
-    })
+    let drop_type =
+        c::TypeExpr::FunctionPtr("void".type_var().into(), vec![struct_ptr_type.clone()]).into();
+
+    let mut fields = vec![
+        ("int".type_var().into(), "rc".into()),
+        (call_type, "call".into()),
+        (drop_type, "drop".into()),
+    ];
+    fields.extend(captured_values_parameters.iter().cloned());
+    c::TopLevelDeclaration::Struct(closure.struct_name.clone(), fields)
 }
 
-fn compile_closure_impl_function(closure: &Closure) -> c::Function {
+fn closure_impl_function(closure: &Closure) -> c::Function {
     closure.body.clone()
 }
 
-fn compile_closure_call_function(closure: &Closure, struct_ptr_type: c::PTypeExpr) -> c::Function {
+fn closure_call_function(closure: &Closure, struct_ptr_type: c::PTypeExpr) -> c::Function {
     // Make the body of the call function.
     // We want to take the implementation function of the closure, and apply it
     // the correct parameters, as they are stored in closure.body.parameters
@@ -188,7 +195,7 @@ fn compile_closure_call_function(closure: &Closure, struct_ptr_type: c::PTypeExp
     }
 }
 
-fn compile_closure_make_function(closure: &Closure, struct_ptr_type: c::PTypeExpr) -> c::Function {
+fn closure_make_function(closure: &Closure, struct_ptr_type: c::PTypeExpr) -> c::Function {
     let ret_name: Name = "ret".into();
     let ret_var = ret_name.clone().var();
 
@@ -199,8 +206,8 @@ fn compile_closure_make_function(closure: &Closure, struct_ptr_type: c::PTypeExp
         .call([closure.struct_name.clone().type_var().sizeof()])
         .cast(struct_ptr_type.clone())
         .variable(ret_name, struct_ptr_type.clone());
-    // ret.rc = 1;
-    let assign_rc = ret_var.clone().arrow("rc").assign(1.literal());
+    // ret.rc = 0;
+    let assign_rc = ret_var.clone().arrow("rc").assign(0.literal());
     // ret.call = callX;
     let assign_call = ret_var
         .clone()
@@ -229,13 +236,23 @@ fn compile_closure_make_function(closure: &Closure, struct_ptr_type: c::PTypeExp
     }
 }
 
-fn is_reference_counted(typ: &Term) -> bool {
-    match typ {
-        Term::Binder {
-            binder: BinderKind::Lam,
-            ..
-        } => true,
-        _ => false,
+fn closure_drop_function(closure: &Closure, ptr_type: c::PTypeExpr) -> c::Function {
+    let rc = "self".var().arrow("rc");
+    let parameters = vec![(ptr_type.clone(), "self".into())];
+
+    c::Function {
+        return_type: "void".type_var().into(),
+        name: closure.drop_name.clone(),
+        parameters: parameters.clone(),
+        body: Some(vec![
+            // Check if the reference count reaches zero
+            rc.clone().eq(0.literal()).if_then([
+                // If so, clean it up!
+                "free".var().call(["self".var()]).stmt(),
+                // TODO: Also clean up the arguments!
+            ]),
+            rc.clone().dec().stmt(),
+        ]),
     }
 }
 
@@ -254,6 +271,7 @@ fn compile_destructor(var_name: Name, var_type: &Term) -> c::Block {
     let var = var_name.clone().var();
     let rc = var.clone().arrow("rc");
     if is_reference_counted(var_type) {
+        // TODO: Change
         vec![
             rc.clone().dec().stmt(),
             rc.eq(0.literal())
@@ -462,6 +480,7 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
                 struct_name: con.name_gen.next(NameOptions::ClosureStruct),
                 call_name: con.name_gen.next(NameOptions::Call),
                 make_name: con.name_gen.next(NameOptions::Make),
+                drop_name: con.name_gen.next(NameOptions::Drop),
                 body: c::Function {
                     name: con.name_gen.next(NameOptions::Impl),
                     return_type: body_c_type,
@@ -473,12 +492,15 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
             con.closures.push(closure);
 
             let output_var_name = con.name_gen.next(NameOptions::Var);
-            let set_output = closure_make_name.var().call(captured_variable_calls).variable(output_var_name.clone(), compile_type_expr(&term_type, con).unwrap());
+            let set_output = closure_make_name
+                .var()
+                .call(captured_variable_calls)
+                .variable(
+                    output_var_name.clone(),
+                    compile_type_expr(&term_type, con).unwrap(),
+                );
             // Return a variable referencing the function.
-            (
-                vec![ set_output ],
-                output_var_name,
-            )
+            (vec![set_output], output_var_name)
         }
         Term::Prop => (vec![], "prop".into()),
         Term::Type => (vec![], "type".into()),
