@@ -90,16 +90,6 @@ impl Context {
     }
 }
 
-fn is_reference_counted(typ: &Term) -> bool {
-    match typ {
-        Term::Binder {
-            binder: BinderKind::Pi,
-            ..
-        } => true,
-        _ => false,
-    }
-}
-
 /// Returns declarations that code anything the closure needs.
 ///
 /// Returns a tuple with names to forward declare (currently only the struct
@@ -117,14 +107,25 @@ fn compile_closure_declarations(closure: &Closure) -> (Name, [c::TopLevelDeclara
             // Function.
             Function(closure_impl_function(closure)),
             Function(closure_call_function(closure, struct_ptr_type.clone())),
-            Function(closure_make_function(closure, struct_ptr_type.clone())),
             Function(closure_drop_function(closure, struct_ptr_type.clone())),
+            Function(closure_make_function(closure, struct_ptr_type.clone())),
         ],
     )
 }
 
-fn closure_call_type(closure_ptr_type: c::PTypeExpr, ret_type: c::PTypeExpr, arg_type: c::PTypeExpr) -> c::TypeExpr {
+// TODO: Get rid of `closure_ptr_type` parameter, and this function as a whole.
+fn closure_call_type(
+    closure_ptr_type: c::PTypeExpr,
+    ret_type: c::PTypeExpr,
+    arg_type: c::PTypeExpr,
+) -> c::TypeExpr {
     ret_type.function_ptr([closure_ptr_type, arg_type])
+}
+
+fn closure_drop_type() -> c::TypeExpr {
+    "void"
+        .type_var()
+        .function_ptr(["void".type_var().ptr().into()])
 }
 
 fn closure_struct(closure: &Closure, struct_ptr_type: c::PTypeExpr) -> c::TopLevelDeclaration {
@@ -136,19 +137,17 @@ fn closure_struct(closure: &Closure, struct_ptr_type: c::PTypeExpr) -> c::TopLev
     let captured_values_parameters = &closure.body.parameters[1..];
 
     // The type of the call field.
-    let call_type: c::PTypeExpr = c::TypeExpr::FunctionPtr(
+    let call_type: c::PTypeExpr = closure_call_type(
+        struct_ptr_type.clone(),
         closure.body.return_type.clone(),
-        vec![struct_ptr_type.clone(), closure_parameter.0.clone()],
+        closure_parameter.0.clone(),
     )
     .into();
-
-    let drop_type =
-        c::TypeExpr::FunctionPtr("void".type_var().into(), vec![struct_ptr_type.clone()]).into();
 
     let mut fields = vec![
         ("int".type_var().into(), "rc".into()),
         (call_type, "call".into()),
-        (drop_type, "drop".into()),
+        (closure_drop_type().into(), "drop".into()),
     ];
     fields.extend(captured_values_parameters.iter().cloned());
     c::TopLevelDeclaration::Struct(closure.struct_name.clone(), fields)
@@ -213,6 +212,11 @@ fn closure_make_function(closure: &Closure, struct_ptr_type: c::PTypeExpr) -> c:
         .clone()
         .arrow("call")
         .assign(closure.call_name.clone().var());
+    // ret.drop = dropX;
+    let assign_drop = ret_var
+        .clone()
+        .arrow("drop")
+        .assign(closure.drop_name.clone().var());
     // ret.fieldX = parameterX;
     let assign_fields = closure.body.parameters[1..].iter().map(|(_, name)| {
         ret_var
@@ -222,7 +226,7 @@ fn closure_make_function(closure: &Closure, struct_ptr_type: c::PTypeExpr) -> c:
     });
 
     // Combine the statemets into a block.
-    let body: c::Block = [declare_ret, assign_rc, assign_call]
+    let body: c::Block = [declare_ret, assign_rc, assign_call, assign_drop]
         .into_iter()
         .chain(assign_fields)
         .chain([ret_var.clone().ret()])
@@ -237,48 +241,66 @@ fn closure_make_function(closure: &Closure, struct_ptr_type: c::PTypeExpr) -> c:
 }
 
 fn closure_drop_function(closure: &Closure, ptr_type: c::PTypeExpr) -> c::Function {
-    let rc = "self".var().arrow("rc");
-    let parameters = vec![(ptr_type.clone(), "self".into())];
+    let void_self = "void_self";
+    let self_ = "self";
+    let void: c::PTypeExpr = "void".type_var().into();
+    let rc = self_.var().arrow("rc");
 
     c::Function {
-        return_type: "void".type_var().into(),
+        return_type: void.clone(),
         name: closure.drop_name.clone(),
-        parameters: parameters.clone(),
+        parameters: vec![(void.ptr().into(), void_self.into())],
         body: Some(vec![
+            // Cast the void pointer to the correct type.
+            void_self
+                .var()
+                .cast(ptr_type.clone())
+                .variable(self_, ptr_type),
             // Check if the reference count reaches zero
-            rc.clone().eq(0.literal()).if_then([
-                // If so, clean it up!
-                "free".var().call(["self".var()]).stmt(),
-                // TODO: Also clean up the arguments!
-            ]),
-            rc.clone().dec().stmt(),
+            rc.clone().eq(0.literal()).if_then_else(
+                vec![
+                    // If so, clean it up!
+                    "free".var().call([self_.var()]).stmt(),
+                    // Also clean up the arguments!
+                ]
+                .extend_pipe(
+                    closure
+                        .body
+                        .parameters
+                        .iter()
+                        // TODO: Because of this, closure should track the original types of it's
+                        // arguments.
+                        .map(|(t, n)| compile_drop(n, t))
+                        .flatten(),
+                ),
+                [rc.clone().dec().stmt()],
+            ),
         ]),
     }
 }
 
 fn compile_clone(var_c_name: Name, var_n_type: &Term) -> (c::Block, Name) {
     (
-        if is_reference_counted(var_n_type) {
-            vec![var_c_name.clone().var().arrow("rc").inc().stmt()]
-        } else {
-            vec![]
+        match var_n_type {
+            Term::Binder {
+                binder: BinderKind::Pi,
+                ..
+            } => vec![var_c_name.clone().var().arrow("rc").inc().stmt()],
+            _ => vec![],
         },
         var_c_name,
     )
 }
 
-fn compile_destructor(var_name: Name, var_type: &Term) -> c::Block {
+fn compile_drop(var_name: Name, var_type: &Term) -> c::Block {
     let var = var_name.clone().var();
-    let rc = var.clone().arrow("rc");
-    if is_reference_counted(var_type) {
-        // TODO: Change
-        vec![
-            rc.clone().dec().stmt(),
-            rc.eq(0.literal())
-                .if_then(["free".var().call([var]).stmt()]),
-        ]
-    } else {
-        vec![]
+    let drop = var.clone().arrow("drop");
+    match var_type {
+        Term::Binder {
+            binder: BinderKind::Pi,
+            ..
+        } => vec![drop.call([var.clone()]).stmt()],
+        _ => vec![],
     }
 }
 
@@ -313,15 +335,20 @@ fn function_c_type_declaration(
     let arg_type_expr = compile_type_expr(arg_type, context).unwrap();
     let ret_type_expr = compile_type_expr(ret_type, context).unwrap();
 
-    let call_type_expr = ret_type_expr
-        .clone()
-        .function_ptr([name.clone().type_var().ptr().into(), arg_type_expr.into()]);
+    let closure_ptr_type = name.clone().type_var().ptr();
+    let call_type_expr = closure_call_type(
+        closure_ptr_type.into(),
+        ret_type_expr.into(),
+        arg_type_expr.into(),
+    );
+    let drop_type_expr = closure_drop_type();
 
     c::TopLevelDeclaration::Struct(
         name,
         vec![
             ("int".type_var().into(), "rc".into()),
             (call_type_expr.into(), "call".into()),
+            (drop_type_expr.into(), "drop".into()),
         ],
     )
 }
@@ -416,14 +443,14 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
                     compile_type_expr(&term_type, con).unwrap(),
                 );
             // Dispose of the temporary variables.
-            let destruct_func_and_arg = compile_destructor(func_var_name, &func_type)
-                .extend_pipe(compile_destructor(arg_var_name, &arg_type));
+            let drop_func_and_arg = compile_drop(func_var_name, &func_type)
+                .extend_pipe(compile_drop(arg_var_name, &arg_type));
 
             (
                 func_perlude
                     .extend_pipe(arg_prelude)
                     .extend_pipe_one(set_output)
-                    .extend_pipe(destruct_func_and_arg),
+                    .extend_pipe(drop_func_and_arg),
                 output_var_name,
             )
         }

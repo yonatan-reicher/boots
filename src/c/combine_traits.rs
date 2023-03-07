@@ -68,6 +68,10 @@ pub trait CombExpr2: Into<Expr> {
     fn if_then(self, true_block: impl Into<Block>) -> Statement {
         Statement::If(self.into(), true_block.into(), None)
     }
+
+    fn if_then_else(self, true_block: impl Into<Block>, else_block: impl Into<Block>) -> Statement {
+        Statement::If(self.into(), true_block.into(), Some(else_block.into()))
+    }
 }
 
 impl<T> CombExpr2 for T where T: Into<Expr> {}
