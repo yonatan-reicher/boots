@@ -10,6 +10,7 @@ pub enum BinderKind {
     Pi,
 }
 
+/*
 impl Display for BinderKind {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         match self {
@@ -18,6 +19,7 @@ impl Display for BinderKind {
         }
     }
 }
+*/
 
 pub type VarIdent = Name;
 
@@ -102,6 +104,13 @@ impl PartialEq for Term {
 impl Eq for Term {}
 
 impl Term {
+    pub fn is_atom(&self) -> bool {
+        match self {
+            Term::Var(_) | Term::Prop | Term::Type => true,
+            _ => false,
+        }
+    }
+
     pub fn free_vars(&self) -> Vec<VarIdent> {
         use Term::*;
         match self {
@@ -206,6 +215,30 @@ impl Term {
                 }
                 .into()
             }),
+            Binder {
+                binder,
+                param_name,
+                ty,
+                body,
+            } if replacement.free_vars().contains(param_name) => {
+                // Change the parameter name and recurse.
+                let new_param_name: Name = format!("{}_", param_name).into();
+                let new_binder_term = Binder {
+                    binder: *binder,
+                    param_name: new_param_name.clone(),
+                    ty: ty.clone(),
+                    body: Self::substitute_or(
+                        body.clone(),
+                        param_name,
+                        Term::Var(new_param_name.clone()).into(),
+                    ),
+                };
+                Some(Self::substitute_or(
+                    new_binder_term.into(),
+                    name,
+                    replacement,
+                ))
+            }
             Binder {
                 binder,
                 param_name,
@@ -550,15 +583,36 @@ impl Display for Term {
 
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
         use Term::*;
+
+        struct FmtParen<'a>(&'a Term);
+
+        impl<'a> Display for FmtParen<'a> {
+            fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+                if self.0.is_atom() {
+                    write!(f, "{}", self.0)
+                } else {
+                    write!(f, "({})", self.0)
+                }
+            }
+        }
+
         match self {
             Var(name) => name.fmt(f),
-            Appl(lhs, rhs) => write!(f, "({} {})", lhs, rhs),
+            Appl(lhs, rhs) => {
+                if std::matches!(lhs.as_ref(), Appl(..)) {
+                    write!(f, "{} {}", lhs, FmtParen(rhs))
+                } else {
+                    write!(f, "{} {}", FmtParen(lhs), FmtParen(rhs))
+                }
+            }
             Binder {
                 binder: BinderKind::Pi,
                 param_name,
                 ty,
                 body,
-            } if body.free_vars().iter().all(|x| x != param_name) => write!(f, "({ty} -> {body})",),
+            } if body.free_vars().iter().all(|x| x != param_name) => {
+                write!(f, "{} -> {}", FmtParen(ty), body)
+            }
             Binder {
                 binder,
                 param_name,
@@ -566,13 +620,16 @@ impl Display for Term {
                 body,
             } => write!(
                 f,
-                "({}{}: {}. {})",
-                binder.to_string(),
+                "({}: {}) {} {}",
                 param_name,
                 ty,
+                match binder {
+                    BinderKind::Pi => "->",
+                    BinderKind::Lam => "=>",
+                },
                 body,
             ),
-            TypeAnnotation(term, typ) => write!(f, "({} : {})", term, typ),
+            TypeAnnotation(term, typ) => write!(f, "{} : {}", term, typ),
             Prop => write!(f, "prop"),
             Type => write!(f, "type"),
         }
