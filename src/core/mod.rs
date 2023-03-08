@@ -39,6 +39,7 @@ pub enum Term {
         ty: PTerm,
         body: PTerm,
     },
+    TypeAnnotation(PTerm, PTerm),
     Prop,
     Type,
 }
@@ -90,6 +91,10 @@ impl PartialEq for Term {
             (Prop, _) => false,
             (Type, Type) => true,
             (Type, _) => false,
+            (TypeAnnotation(term1, type1), TypeAnnotation(term2, type2)) => {
+                term1 == term2 && type1 == type2
+            }
+            (TypeAnnotation(_, _), _) => false,
         }
     }
 }
@@ -113,6 +118,7 @@ impl Term {
                     .into_iter()
                     .filter(|var_ident| var_ident != name),
             ),
+            TypeAnnotation(term, ty) => extend(term.free_vars(), ty.free_vars()),
             Prop => vec![],
             Type => vec![],
         }
@@ -220,6 +226,19 @@ impl Term {
                     .into(),
                 ),
             },
+            TypeAnnotation(term, typ) => match (
+                term.substitute(name, replacement.clone()),
+                typ.substitute(name, replacement),
+            ) {
+                (None, None) => None,
+                (term_new, type_new) => Some(
+                    TypeAnnotation(
+                        term_new.as_ref().unwrap_or(term).clone(),
+                        type_new.as_ref().unwrap_or(typ).clone(),
+                    )
+                    .into(),
+                ),
+            },
             Prop | Type | Var(_) => None,
         }
     }
@@ -317,6 +336,7 @@ impl Term {
                     .into(),
                 )
             }
+            TypeAnnotation(term, _) => term.eval(),
             Prop | Type | Var(_) => None,
         }
     }
@@ -397,6 +417,18 @@ impl Term {
                 });
                 // The pi binder's type is the type of the body.
                 Ok(body_type)
+            }
+            TypeAnnotation(term, typ) => {
+                // Check that the type of term matches the type annotation.
+                let term_type = term.infer_type_with_ctx(variable_types)?;
+                if term_type != *typ {
+                    Err(vec![format!(
+                        "Type annotation mismatch: {} != {}",
+                        term_type, typ
+                    )])
+                } else {
+                    Ok(term_type)
+                }
             }
             Prop => Ok(Type.into()),
             Type => Ok(Type.into()),
@@ -522,7 +554,7 @@ impl Display for Term {
             Var(name) => name.fmt(f),
             Appl(lhs, rhs) => write!(f, "({} {})", lhs, rhs),
             Binder {
-                binder,
+                binder: BinderKind::Pi,
                 param_name,
                 ty,
                 body,
@@ -540,6 +572,7 @@ impl Display for Term {
                 ty,
                 body,
             ),
+            TypeAnnotation(term, typ) => write!(f, "({} : {})", term, typ),
             Prop => write!(f, "prop"),
             Type => write!(f, "type"),
         }

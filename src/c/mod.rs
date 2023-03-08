@@ -51,6 +51,8 @@ pub enum TypeExpr {
     Var(Name),
     StructVar(Name),
     Ptr(PTypeExpr),
+    // Allow dead code - might be useful in the future.
+    #[allow(dead_code)]
     Struct(Vec<(PTypeExpr, Name)>),
     FunctionPtr(PTypeExpr, Vec<PTypeExpr>),
 }
@@ -65,7 +67,11 @@ pub enum Statement {
     Assign(Expr, Expr),
     Return(Expr),
     If(Expr, Block, Option<Block>),
+    // Allow dead code - might be useful in the future.
+    #[allow(dead_code)]
     While(Expr, Block),
+    // Allow dead code - might be useful in the future.
+    #[allow(dead_code)]
     For(Expr, Expr, Expr, Block),
     Declaration {
         type_expression: PTypeExpr,
@@ -79,11 +85,15 @@ pub enum Expr {
     Var(Name),
     Call(Box<Expr>, Vec<Expr>),
     Int(i32),
+    // Allow dead code - might be useful in the future.
+    #[allow(dead_code)]
     Unary(UnaryOp, Box<Expr>),
     Binary(BinaryOp, Box<Expr>, Box<Expr>),
     Cast(PTypeExpr, Box<Expr>),
     SizeOf(PTypeExpr),
     Arrow(Box<Expr>, Name),
+    // Allow dead code - might be useful in the future.
+    #[allow(dead_code)]
     Dot(Box<Expr>, Name),
     Inc(Box<Expr>),
     Dec(Box<Expr>),
@@ -91,9 +101,13 @@ pub enum Expr {
 
 #[derive(Debug, Clone, Copy)]
 pub enum UnaryOp {
+    // Allow dead code - might be useful in the future.
+    #[allow(dead_code)]
     Neg,
 }
 
+// Allow dead code - might be useful in the future.
+#[allow(dead_code)]
 #[derive(Debug, Clone, Copy)]
 pub enum BinaryOp {
     Add,

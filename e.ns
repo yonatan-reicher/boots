@@ -1,1 +1,1 @@
-fun f : (prop -> prop) -> (prop -> prop) -> prop => fun x : prop -> prop => f x x
+(f : (prop -> prop) -> (prop -> prop) -> prop) => (x : prop -> prop) => f x x

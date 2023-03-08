@@ -1,1 +1,1 @@
-fun y: prop => fun x: prop => y
+(y: prop) => (x: prop) => y

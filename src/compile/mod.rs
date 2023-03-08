@@ -34,6 +34,7 @@ enum NameOptions {
 }
 
 impl NameGen {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
@@ -86,6 +87,7 @@ struct Context {
 }
 
 impl Context {
+    #[allow(dead_code)]
     pub fn new() -> Self {
         Self::default()
     }
@@ -361,10 +363,12 @@ pub fn compile(term: PTerm) -> c::Program {
 
     let mut context = Context::default();
 
-    let term_type_expr = compile_type_expr(&term_type, &mut context)
+    // This variable might be used in the future, to decide what to do with the
+    // return value of the program.
+    let _term_type_expr = compile_type_expr(&term_type, &mut context)
         .expect("Also not error handling for compilation...");
 
-    let (expr_prelude, expr) = compile_expr(term, &mut context);
+    let (expr_prelude, _expr_result_name) = compile_expr(term, &mut context);
 
     let main = c::Function {
         return_type: c::TypeExpr::Var("int".into()).into(),
@@ -556,7 +560,7 @@ fn compile_type_expr(term: &Term, con: &mut Context) -> Result<c::TypeExpr, ()> 
         Term::Type => Ok(c::TypeExpr::Var("type_t".into())),
         Term::Binder {
             binder: BinderKind::Pi,
-            param_name,
+            param_name: _,
             ty,
             body,
         } => {

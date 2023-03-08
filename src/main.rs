@@ -9,7 +9,6 @@ mod parse;
 use cli::{parse_args, Action, Cli};
 use std::fs;
 use std::io;
-use std::path::PathBuf;
 
 use io::Result as ioRes;
 
@@ -56,31 +55,6 @@ mod repl {
     }
 }
 
-fn read_stdin() -> ioRes<String> {
-    let mut ret = String::new();
-    let mut last_line_empty = false;
-
-    loop {
-        let bytes_read = io::stdin().read_line(&mut ret)?;
-        // This line is empty if we read only a "\n". It has 2 bytes.
-        let this_line_empty = bytes_read <= 2;
-
-        if last_line_empty && this_line_empty {
-            break Ok(ret);
-        }
-
-        last_line_empty = this_line_empty;
-    }
-}
-
-fn read_file_or_stdin(filename: Option<PathBuf>) -> io::Result<String> {
-    if let Some(filename) = filename {
-        std::fs::read_to_string(filename)
-    } else {
-        read_stdin()
-    }
-}
-
 fn main() -> ioRes<()> {
     let Cli { action } = parse_args();
 
@@ -116,7 +90,7 @@ fn main() -> ioRes<()> {
         Action::Compile { filename } => {
             let source = fs::read_to_string(filename)?;
             let expr = parse::parse(&source).unwrap();
-            let ty = expr.infer_type().unwrap();
+            let _ty = expr.infer_type().unwrap();
             let evaluated = Term::eval_or(expr.into());
             println!("{}", evaluated);
             let program = compile::compile(evaluated.into());

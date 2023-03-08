@@ -7,15 +7,12 @@ use crate::name::Name;
 pub enum Error {
     TermNotFound,
     UnclosedParenthesis,
-    IdentifierNotFound(Name),
-    ExpectedIdentifierAfterFun,
-    FoundKeywordAfterFun(Keyword),
-    ExpectedColonAfterFunParameter,
+    ExpectedTypeAnnotation { found: Term },
+    ExpectedNameInParameter { found: Term },
 }
 
 #[derive(Debug, Clone, Copy)]
 pub enum Keyword {
-    Fun,
     Prop,
     Type,
 }
@@ -31,12 +28,13 @@ struct State<'source> {
     line: usize,
     column: usize,
     indent: Vec<usize>,
-    vars: Vars<'source>,
+    /// Hold a phatom reference to the source code lifetime. Why? Because we 
+    /// might hold actual references to the source code in the future.
+    source_marker: std::marker::PhantomData<&'source str>,
 }
 
-struct Vars<'source>(Vec<&'source str>);
-
 impl<'source> IdentifierOrKeyword<'source> {
+    #[allow(dead_code)]
     pub fn ident(self) -> Result<&'source str, Keyword> {
         match self {
             Self::Identifier(string) => Ok(string),
@@ -44,33 +42,12 @@ impl<'source> IdentifierOrKeyword<'source> {
         }
     }
 
+    #[allow(dead_code)]
     pub fn keyword(self) -> Result<Keyword, &'source str> {
         match self {
             Self::Keyword(keyword) => Ok(keyword),
             Self::Identifier(string) => Err(string),
         }
-    }
-}
-
-impl<'source> Vars<'source> {
-    pub fn new() -> Self {
-        Self(Vec::new())
-    }
-
-    pub fn variable_index(&self, name: &str) -> Option<usize> {
-        let n_vars = self.0.len();
-        self.0
-            .iter()
-            .position(|&var| var == name)
-            .map(|index| n_vars - 1 - index)
-    }
-
-    pub fn push_variable(&mut self, name: &'source str) {
-        self.0.push(name);
-    }
-
-    pub fn pop_variable(&mut self) {
-        self.0.pop();
     }
 }
 
@@ -81,7 +58,7 @@ impl<'source> State<'source> {
             line: 1,
             column: 1,
             indent: Vec::new(),
-            vars: Vars::new(),
+            source_marker: std::marker::PhantomData,
         }
     }
 
@@ -106,7 +83,7 @@ type ParseResult<T> = Result<T, Vec<Error>>;
 fn res_combine<T, U>(a: ParseResult<T>, b: ParseResult<U>) -> ParseResult<(T, U)> {
     match (a, b) {
         (Ok(a), Ok(b)) => Ok((a, b)),
-        (Err(e), _) | (_, Err(e)) => Err(e),
+        (Err(e), Ok(_)) | (Ok(_), Err(e)) => Err(e),
         (Err(mut a), Err(b)) => {
             a.extend(b);
             Err(a)
@@ -133,6 +110,40 @@ fn term<'source>(source: &'source str, state: &mut State<'source>) -> Result<Ter
             ty: Rc::new(first_atom),
             body: Rc::new(ret),
         });
+    }
+
+    if pop_eq_str(source, state, "=>") {
+        skip_whitespace(source, state);
+        let ret = term(source, state);
+        let (first_atom, ret) = res_combine(first_atom, ret)?;
+        let (param_name, param_type) = match &first_atom {
+            Term::TypeAnnotation(param_expr, param_type) => match param_expr.as_ref() {
+                Term::Var(param_name) => (param_name.clone(), param_type.clone()),
+                _ => {
+                    return Err(vec![Error::ExpectedNameInParameter {
+                        found: first_atom,
+                    }])
+                }
+            },
+            _ => {
+                return Err(vec![Error::ExpectedTypeAnnotation {
+                    found: first_atom,
+                }])
+            }
+        };
+        return Ok(Term::Binder {
+            binder: BinderKind::Lam,
+            param_name,
+            ty: param_type,
+            body: Rc::new(ret),
+        });
+    }
+
+    if pop_eq(source, state, ':') {
+        skip_whitespace(source, state);
+        let typ = term(source, state);
+        let (first_atom, typ) = res_combine(first_atom, typ)?;
+        return Ok(Term::TypeAnnotation(first_atom.into(), typ.into()))
     }
 
     // Then, parse a list of more atoms!
@@ -186,7 +197,6 @@ fn atom<'source>(
         match ident {
             IdentifierOrKeyword::Identifier(ident) => Ok(Some(Term::Var(Name::from_str(ident)))),
             IdentifierOrKeyword::Keyword(keyword) => match keyword {
-                Keyword::Fun => function_term(source, state).map(Some),
                 Keyword::Prop => Ok(Some(Term::Prop)),
                 Keyword::Type => Ok(Some(Term::Type)),
             },
@@ -194,45 +204,6 @@ fn atom<'source>(
     } else {
         Ok(None)
     }
-}
-
-fn function_term<'source>(
-    source: &'source str,
-    state: &mut State<'source>,
-) -> Result<Term, Vec<Error>> {
-    skip_whitespace(source, state);
-
-    let parameter_name = identifier_or_keyword(source, state)
-        .ok_or_else(|| vec![Error::ExpectedIdentifierAfterFun])?
-        .ident()
-        .map_err(|keyword| vec![Error::FoundKeywordAfterFun(keyword)])?;
-
-    skip_whitespace(source, state);
-
-    if !pop_eq(source, state, ':') {
-        return Err(vec![Error::ExpectedColonAfterFunParameter]);
-    }
-
-    skip_whitespace(source, state);
-
-    let parameter_type_expr = term(source, state)?;
-
-    skip_whitespace(source, state);
-
-    pop_eq_str(source, state, "=>");
-
-    skip_whitespace(source, state);
-
-    state.vars.push_variable(&parameter_name);
-    let body = term(source, state)?;
-    state.vars.pop_variable();
-
-    Ok(Term::Binder {
-        binder: BinderKind::Lam,
-        param_name: Name::from_str(parameter_name),
-        ty: Rc::new(parameter_type_expr),
-        body: Rc::new(body),
-    })
 }
 
 fn identifier_or_keyword<'source>(
@@ -268,7 +239,6 @@ fn identifier_or_keyword<'source>(
 
     Some(IdentifierOrKeyword::Keyword(
         match identifier(source, state)? {
-            "fun" => Keyword::Fun,
             "prop" => Keyword::Prop,
             "type" => Keyword::Type,
             ident => return Some(IdentifierOrKeyword::Identifier(ident.into())),
@@ -294,6 +264,7 @@ fn line_peek(source: &str, state: &mut State) -> Option<char> {
 }
 
 /// Are we at the end of the code?
+#[allow(dead_code)]
 fn is_eof(source: &str, state: &mut State) -> bool {
     rest(source, state).is_empty()
 }
@@ -330,7 +301,8 @@ fn pop_no_indent(source: &str, state: &mut State) -> Option<char> {
 }
 
 /// Pops while the current character is whitespace. Does not pop newlines.
-fn skip_whitespace(source: &str, state: &mut State) {
+//fn skip_whitespace(source: &str, state: &mut State) {
+fn skip_whitespace1(source: &str, state: &mut State) {
     loop {
         if line_peek(source, state)
             .map(char::is_whitespace)
@@ -350,7 +322,7 @@ fn pop(source: &str, state: &mut State) -> Option<char> {
     if ch == '\n' {
         // Skip over the spaces, and count to get the indent.
         let start = state.index;
-        skip_whitespace(source, state);
+        skip_whitespace1(source, state);
         let end = state.index;
 
         // Get the new indent.
@@ -394,6 +366,21 @@ fn skip_until(source: &str, state: &mut State, ch: char) -> bool {
             Some(_) => (),
             None => return false,
         }
+    }
+}
+
+// fn skip_whitespace_and_newlines(source: &str, state: &mut State) {
+fn skip_whitespace(source: &str, state: &mut State) {
+    loop {
+        let ch = peek(source, state);
+        // Stop if not whitespace or eol.
+        if ch.map(char::is_whitespace).unwrap_or(true) == false {
+            break;
+        }
+        if is_eof(source, state) {
+            break;
+        }
+        pop(source, state);
     }
 }
 
