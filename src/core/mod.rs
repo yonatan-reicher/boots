@@ -21,8 +21,6 @@ impl Display for BinderKind {
 }
 */
 
-pub type VarIdent = Name;
-
 pub type PTerm = Rc<Term>;
 
 pub type TypeContext = std::collections::HashMap<Name, PTerm>;
@@ -33,11 +31,11 @@ pub type TypeContext = std::collections::HashMap<Name, PTerm>;
  */
 #[derive(Debug, Hash, Clone, PartialOrd, Ord)]
 pub enum Term {
-    Var(VarIdent),
+    Var(Name),
     Appl(PTerm, PTerm),
     Binder {
         binder: BinderKind,
-        param_name: VarIdent,
+        param_name: Name,
         ty: PTerm,
         body: PTerm,
     },
@@ -111,7 +109,7 @@ impl Term {
         }
     }
 
-    pub fn free_vars(&self) -> Vec<VarIdent> {
+    pub fn free_vars(&self) -> Vec<Name> {
         use Term::*;
         match self {
             Var(var) => vec![var.clone()],
@@ -180,11 +178,11 @@ impl Term {
     }
     */
 
-    pub fn substitute_or(this: PTerm, name: &VarIdent, replacement: PTerm) -> PTerm {
+    pub fn substitute_or(this: PTerm, name: &Name, replacement: PTerm) -> PTerm {
         this.substitute(name, replacement).unwrap_or(this)
     }
 
-    pub fn substitute(&self, name: &VarIdent, replacement: PTerm) -> Option<PTerm> {
+    pub fn substitute(&self, name: &Name, replacement: PTerm) -> Option<PTerm> {
         use Term::*;
         match self {
             Var(other_name) if other_name == name => Some(replacement),
