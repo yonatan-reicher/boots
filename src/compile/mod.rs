@@ -71,6 +71,7 @@ struct Closure {
     make_name: Name,
     drop_name: Name,
     body: c::Function,
+    captured_variables_types: Vec<(Name, PTerm, c::PTypeExpr)>,
 }
 
 type FunctionCTypes = HashMap<(PTerm, PTerm), Name>;
@@ -94,7 +95,7 @@ impl Context {
 ///
 /// Returns a tuple with names to forward declare (currently only the struct
 /// name) and the declarations.
-fn compile_closure_declarations(closure: &Closure) -> (Name, [c::TopLevelDeclaration; 5]) {
+fn compile_closure_declarations(closure: &Closure, name_gen: &mut NameGen) -> (Name, [c::TopLevelDeclaration; 5]) {
     use c::TopLevelDeclaration::Function;
 
     let struct_ptr_type: c::PTypeExpr = closure.struct_name.clone().type_var().ptr().into();
@@ -107,7 +108,7 @@ fn compile_closure_declarations(closure: &Closure) -> (Name, [c::TopLevelDeclara
             // Function.
             Function(closure_impl_function(closure)),
             Function(closure_call_function(closure, struct_ptr_type.clone())),
-            Function(closure_drop_function(closure, struct_ptr_type.clone())),
+            Function(closure_drop_function(closure, struct_ptr_type.clone(), name_gen)),
             Function(closure_make_function(closure, struct_ptr_type.clone())),
         ],
     )
@@ -240,7 +241,7 @@ fn closure_make_function(closure: &Closure, struct_ptr_type: c::PTypeExpr) -> c:
     }
 }
 
-fn closure_drop_function(closure: &Closure, ptr_type: c::PTypeExpr) -> c::Function {
+fn closure_drop_function(closure: &Closure, ptr_type: c::PTypeExpr, name_gen: &mut NameGen) -> c::Function {
     let void_self = "void_self";
     let self_ = "self";
     let void: c::PTypeExpr = "void".type_var().into();
@@ -264,13 +265,15 @@ fn closure_drop_function(closure: &Closure, ptr_type: c::PTypeExpr) -> c::Functi
                     // Also clean up the arguments!
                 ]
                 .extend_pipe(
-                    closure
-                        .body
-                        .parameters
+                    closure.captured_variables_types
                         .iter()
                         // TODO: Because of this, closure should track the original types of it's
                         // arguments.
-                        .map(|(t, n)| compile_drop(n, t))
+                        .map(|(field_name, field_type, field_type_expr)| {
+                            let temp_name = name_gen.next(NameOptions::Var);
+                            [ self_.var().arrow(field_name.clone()).variable(temp_name.clone(), field_type_expr.clone()) ]
+                                .extend_pipe(compile_drop(temp_name, field_type))
+                        })
                         .flatten(),
                 ),
                 [rc.clone().dec().stmt()],
@@ -387,7 +390,7 @@ pub fn compile(term: PTerm) -> c::Program {
 
     // Declare the closures.
     for closure in &context.closures {
-        let (forward_declaration, declaration) = compile_closure_declarations(closure);
+        let (forward_declaration, declaration) = compile_closure_declarations(closure, &mut context.name_gen);
         forward_declarations.push(forward_declaration);
         declarations.extend(declaration);
     }
@@ -482,6 +485,16 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
                 });
 
             // Get the captured variables.
+            let captured_variables_types: Vec<(Name, PTerm, c::PTypeExpr)> = (
+                    term.free_vars()
+                        .iter()
+                        .map(|var_name| {
+                            let (var_c_type, var_c_name) = con.c_vars.get(var_name).unwrap();
+                            let var_n_type = con.n_vars.get(var_name).unwrap();
+                            (var_c_name.clone(), var_n_type.clone(), var_c_type.clone())
+                        })
+                )
+                .collect();
             let parameters: Vec<_> = [(param_c_ty, param_c_name)]
                 .into_iter()
                 .chain(
@@ -514,6 +527,7 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
                     parameters,
                     body: Some(body),
                 },
+                captured_variables_types,
             };
             let closure_make_name = closure.make_name.clone();
             con.closures.push(closure);
