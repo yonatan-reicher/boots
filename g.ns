@@ -1,0 +1,6 @@
+(
+    (f: str -> str -> str) =>
+    (x: str) =>
+    f x "world"
+)
+((x: str) => (y: str) => string-append x (string-append y "!"))

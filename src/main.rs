@@ -9,9 +9,7 @@ mod parse;
 
 use cli::{parse_args, Action, Cli};
 use std::fs;
-use std::io;
-
-use io::Result as ioRes;
+use std::io::{self, Result as IORes};
 
 use crate::core::{BinderKind, Term, PTerm};
 
@@ -20,14 +18,14 @@ mod repl {
     use std::io::Write;
 
     /// Gets a single line of code from the user.
-    fn get_line(buffer: &mut String) -> ioRes<usize> {
+    fn get_line(buffer: &mut String) -> IORes<usize> {
         print!(">>> ");
         io::stdout().flush()?;
         io::stdin().read_line(buffer)
     }
 
     /// Reads a section of code, that may be multiple lines.
-    fn read_snippit(buffer: &mut String) -> ioRes<usize> {
+    fn read_snippit(buffer: &mut String) -> IORes<usize> {
         // For now, read until an empty line.
         // This line is empty if we read only a "\n". It has 2 bytes.
         let bytes = get_line(buffer)?;
@@ -38,7 +36,7 @@ mod repl {
         })
     }
 
-    pub fn run(mut eval: impl FnMut(&str) -> ioRes<bool>) -> ioRes<()> {
+    pub fn run(mut eval: impl FnMut(&str) -> IORes<bool>) -> IORes<()> {
         let mut buffer = String::new();
         loop {
             read_snippit(&mut buffer)?;
@@ -56,7 +54,7 @@ mod repl {
     }
 }
 
-fn main() -> ioRes<()> {
+fn main() -> IORes<()> {
     let Cli { action } = parse_args();
     let mut engine = engine::Engine::new();
 
@@ -89,8 +87,8 @@ fn main() -> ioRes<()> {
                 } else if source.chars().all(char::is_whitespace) {
                     return Ok(true);
                 }
-                let expr: PTerm = dbg!(parse::parse(&source).expect("Failed to parse")).into();
-                let typ = dbg!(engine.infer_type(expr.clone()).expect("Failed to infer type"));
+                let expr: PTerm = parse::parse(&source).expect("Failed to parse").into();
+                let typ = engine.infer_type(expr.clone()).expect("Failed to infer type");
                 println!("Type is {}", typ);
                 let evaluated = engine.eval(expr);
                 println!("{}", evaluated);
@@ -101,9 +99,9 @@ fn main() -> ioRes<()> {
             filename: Some(filename),
         } => {
             let source = fs::read_to_string(filename)?;
-            let expr = parse::parse(&source).unwrap();
-            let ty = expr.infer_type().unwrap();
-            let evaluated = Term::eval_or(expr.into());
+            let expr: PTerm = parse::parse(&source).unwrap().into();
+            let ty = engine.infer_type(expr.clone()).unwrap();
+            let evaluated = engine.eval(expr);
             println!("{}", evaluated);
             println!("Is of type:");
             println!("{}", ty);
@@ -111,11 +109,11 @@ fn main() -> ioRes<()> {
         }
         Action::Compile { filename } => {
             let source = fs::read_to_string(filename)?;
-            let expr = parse::parse(&source).unwrap();
-            let _ty = expr.infer_type().unwrap();
-            let evaluated = Term::eval_or(expr.into());
+            let expr: PTerm = parse::parse(&source).unwrap().into();
+            let _ty = engine.infer_type(expr.clone()).unwrap();
+            let evaluated = engine.eval(expr);
             println!("{}", evaluated);
-            let program = compile::compile(evaluated.into());
+            let program = engine.compile(evaluated.into());
             println!("{}", program.to_code());
             Ok(())
         }

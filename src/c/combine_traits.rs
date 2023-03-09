@@ -104,6 +104,10 @@ pub trait CombName: Into<Name> {
     fn struct_type_var(self) -> TypeExpr {
         TypeExpr::StructVar(self.into())
     }
+
+    fn literal(self) -> Expr {
+        Expr::Str(self.into())
+    }
 }
 
 impl<T> CombName for T where T: Into<Name> {}

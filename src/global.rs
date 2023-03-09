@@ -40,3 +40,11 @@ pub trait VecPipe<T>: Into<Vec<T>> {
 }
 
 impl<T, V> VecPipe<T> for V where V: Into<Vec<T>> {}
+
+pub trait Pipe<T, U>: Into<T> {
+    fn pipe(self, f: impl FnOnce(T) -> U) -> U {
+        f(self.into())
+    }
+}
+
+impl<T, U> Pipe<T, U> for T {}
