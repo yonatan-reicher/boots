@@ -185,6 +185,18 @@ fn atom<'source>(
 ) -> Result<Option<Term>, Vec<Error>> {
     skip_whitespace(source, state);
 
+    if pop_eq(source, state, '"') {
+        let mut string = String::new();
+        while let Some(c) = peek(source, state) {
+            line_pop(source, state);
+            if c == '"' {
+                break;
+            }
+            string.push(c);
+        }
+        return Ok(Some(Term::StringLiteral(string)));
+    }
+
     if pop_eq(source, state, '(') {
         skip_whitespace(source, state);
         let term = term(source, state);

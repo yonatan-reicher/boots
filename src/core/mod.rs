@@ -42,6 +42,9 @@ pub enum Term {
     TypeAnnotation(PTerm, PTerm),
     Prop,
     Type,
+    StringLiteral(String),
+    Str,
+    StringAppend,
 }
 
 fn result_combine<T, U, E>(
@@ -95,6 +98,12 @@ impl PartialEq for Term {
                 term1 == term2 && type1 == type2
             }
             (TypeAnnotation(_, _), _) => false,
+            (StringLiteral(s1), StringLiteral(s2)) => s1 == s2,
+            (StringLiteral(_), _) => false,
+            (Str, Str) => true,
+            (Str, _) => false,
+            (StringAppend, StringAppend) => true,
+            (StringAppend, _) => false,
         }
     }
 }
@@ -104,7 +113,12 @@ impl Eq for Term {}
 impl Term {
     pub fn is_atom(&self) -> bool {
         match self {
-            Term::Var(_) | Term::Prop | Term::Type => true,
+            Term::Var(_)
+            | Term::Prop
+            | Term::Type
+            | Term::StringAppend
+            | Term::StringLiteral(_)
+            | Term::Str => true,
             _ => false,
         }
     }
@@ -126,8 +140,7 @@ impl Term {
                     .filter(|var_ident| var_ident != name),
             ),
             TypeAnnotation(term, ty) => extend(term.free_vars(), ty.free_vars()),
-            Prop => vec![],
-            Type => vec![],
+            Prop | Type | StringLiteral(_) | Str | StringAppend => vec![],
         }
     }
 
@@ -270,7 +283,7 @@ impl Term {
                     .into(),
                 ),
             },
-            Prop | Type | Var(_) => None,
+            Prop | Type | Var(_) | StringLiteral(_) | Str | StringAppend => None,
         }
     }
 
@@ -336,6 +349,14 @@ impl Term {
                     return Some(ret);
                 }
 
+                if let Appl(func, arg1) = lhs.as_ref() {
+                    if let (StringAppend, StringLiteral(s1), StringLiteral(s2)) =
+                        (func.as_ref(), arg1.as_ref(), rhs.as_ref())
+                    {
+                        return Some(StringLiteral(format!("{}{}", s1, s2)).into());
+                    }
+                }
+
                 if lhs_new.is_none() && rhs_new.is_none() {
                     return None;
                 }
@@ -368,7 +389,7 @@ impl Term {
                 )
             }
             TypeAnnotation(term, _) => term.eval(),
-            Prop | Type | Var(_) => None,
+            Prop | Type | Var(_) | StringLiteral(_) | Str | StringAppend => None,
         }
     }
 
@@ -398,7 +419,7 @@ impl Term {
                 {
                     // Check the type of the argument matches the type of the
                     // parameter.
-                    if *ty != rhs_type {
+                    if ty != &rhs_type {
                         return Err(vec![format!(
                             "Argument type mismatch in {}: expected {}, found {}",
                             self, ty, rhs_type
@@ -463,6 +484,19 @@ impl Term {
             }
             Prop => Ok(Type.into()),
             Type => Ok(Type.into()),
+            StringLiteral(_) => Ok(Str.into()),
+            Str => Ok(Type.into()),
+            StringAppend => Ok(Binder {
+                binder: BinderKind::Pi,
+                param_name: "s1".into(),
+                ty: Str.into(),
+                body: Binder {
+                    binder: BinderKind::Pi,
+                    param_name: "s2".into(),
+                    ty: Str.into(),
+                    body: Str.into(),
+                }.into(),
+            }.into()),
             // Type => Err(vec![format!("Type's type cannot be inferred")]),
         }
     }
@@ -630,6 +664,9 @@ impl Display for Term {
             TypeAnnotation(term, typ) => write!(f, "{} : {}", term, typ),
             Prop => write!(f, "prop"),
             Type => write!(f, "type"),
+            StringLiteral(s) => write!(f, "\"{}\"", s),
+            Str => write!(f, "str"),
+            StringAppend => write!(f, "<string-append>"),
         }
     }
 }

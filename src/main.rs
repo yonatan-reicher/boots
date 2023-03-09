@@ -2,6 +2,7 @@ mod c;
 mod cli;
 mod compile;
 mod core;
+mod engine;
 mod global;
 mod name;
 mod parse;
@@ -12,7 +13,7 @@ use std::io;
 
 use io::Result as ioRes;
 
-use crate::core::Term;
+use crate::core::{BinderKind, Term, PTerm};
 
 mod repl {
     use super::*;
@@ -57,6 +58,27 @@ mod repl {
 
 fn main() -> ioRes<()> {
     let Cli { action } = parse_args();
+    let mut engine = engine::Engine::new();
+
+    engine.add_variable(
+        "string-append".into(),
+        Term::Binder {
+            binder: BinderKind::Pi,
+            param_name: "_".into(),
+            ty: Term::Str.into(),
+            body: Term::Binder {
+                binder: BinderKind::Pi,
+                param_name: "_".into(),
+                ty: Term::Str.into(),
+                body: Term::Str.into(),
+            }
+            .into(),
+        }
+        .into(),
+        Term::StringAppend.into(),
+    );
+
+    engine.add_variable("str".into(), Term::Type.into(), Term::Str.into());
 
     match action {
         Action::Eval { filename: None } => {
@@ -67,10 +89,10 @@ fn main() -> ioRes<()> {
                 } else if source.chars().all(char::is_whitespace) {
                     return Ok(true);
                 }
-                let expr = dbg!(parse::parse(&source).expect("Failed to parse"));
-                let typ = dbg!(expr.infer_type().expect("Failed to infer type"));
+                let expr: PTerm = dbg!(parse::parse(&source).expect("Failed to parse")).into();
+                let typ = dbg!(engine.infer_type(expr.clone()).expect("Failed to infer type"));
                 println!("Type is {}", typ);
-                let evaluated = Term::eval_or(expr.into());
+                let evaluated = engine.eval(expr);
                 println!("{}", evaluated);
                 Ok(true)
             })
