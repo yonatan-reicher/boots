@@ -23,6 +23,7 @@ pub struct Program {
     pub declarations: Vec<TopLevelDeclaration>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum Include {
     Arrow(String),
@@ -127,8 +128,8 @@ impl MultilineCode for Program {
     fn to_code_i(&self) -> I {
         I::many([
             I::lines(self.includes.iter().map(|include| match include {
-                Include::Arrow(path) => format!("#include <{}>", path),
-                Include::Quote(path) => format!("#include \"{}\"", path),
+                Include::Arrow(path) => format!("#include <{path}>"),
+                Include::Quote(path) => format!("#include \"{path}\""),
             })),
             I::line_str(""),
             I::many_vec(
@@ -238,7 +239,7 @@ impl Expr {
             Expr::Call(function, arguments) => {
                 let mut code = String::new();
                 code.push_str(function.to_code().as_str());
-                code.push_str("(");
+                code.push('(');
                 code.push_str(
                     arguments
                         .iter()
@@ -247,22 +248,22 @@ impl Expr {
                         .join(", ")
                         .as_str(),
                 );
-                code.push_str(")");
+                code.push(')');
                 code
             }
             Expr::Unary(op, expr) => {
                 let mut code = String::new();
-                code.push_str("(");
-                code.push_str(match op {
-                    UnaryOp::Neg => "-",
+                code.push('(');
+                code.push(match op {
+                    UnaryOp::Neg => '-',
                 });
                 code.push_str(expr.to_code().as_str());
-                code.push_str(")");
+                code.push(')');
                 code
             }
             Expr::Binary(op, lhs, rhs) => {
                 let mut code = String::new();
-                code.push_str("(");
+                code.push('(');
                 code.push_str(lhs.to_code().as_str());
                 code.push_str(match op {
                     BinaryOp::Add => " + ",
@@ -277,16 +278,16 @@ impl Expr {
                     BinaryOp::Ge => " >= ",
                 });
                 code.push_str(rhs.to_code().as_str());
-                code.push_str(")");
+                code.push(')');
                 code
             }
             Expr::Cast(type_expr, expr) => {
                 let mut code = String::new();
                 code.push_str("((");
                 code.push_str(type_expr.to_code().as_str());
-                code.push_str(")");
+                code.push(')');
                 code.push_str(expr.to_code().as_str());
-                code.push_str(")");
+                code.push(')');
                 code
             }
             Expr::Arrow(e, name) => {
@@ -314,7 +315,7 @@ fn struct_code(struct_type_name: Option<&str>, fields: &Vec<(PTypeExpr, Name)>) 
 
     buf += "struct ";
     if let Some(name) = struct_type_name {
-        buf += &name;
+        buf += name;
         buf += " ";
     } 
     buf += "{ ";

@@ -25,6 +25,7 @@ impl Engine {
         self.values.insert(name, value);
     }
 
+    #[allow(dead_code)]
     pub fn remove_variable(&mut self, name: &Name) {
         self.context.borrow_mut().remove(name);
         self.values.remove(name);
@@ -46,8 +47,7 @@ impl Engine {
         Term::eval_or(term)
     }
 
-    pub fn compile(&self, term: PTerm) -> CProgram {
-        let mut term = term.into();
+    pub fn compile(&self, mut term: PTerm) -> CProgram {
         // Put the values in the term.
         for (name, value) in &self.values {
             term = Term::substitute_or(term, name, value.clone());

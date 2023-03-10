@@ -57,12 +57,6 @@ impl IndentedText {
         }
     }
 
-    pub fn to_string(&self) -> String {
-        let mut code = String::new();
-        self.to_string_impl(&mut code, 0);
-        code
-    }
-
     /// Write the indented text to the given string, with the given indentation level.
     fn to_string_impl(&self, code: &mut String, indent: usize) {
         match self {
@@ -93,5 +87,13 @@ impl IndentedText {
             }
             Empty => (),
         }
+    }
+}
+
+impl ToString for IndentedText {
+    fn to_string(&self) -> String {
+        let mut code = String::new();
+        self.to_string_impl(&mut code, 0);
+        code
     }
 }

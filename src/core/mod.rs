@@ -29,9 +29,8 @@ pub type TypeContext = std::collections::HashMap<Name, PTerm>;
  * The syntax of our calculus. Notice that types are represented in the same way
  * as terms, which is the essence of CoC.
  */
-#[derive(Debug, Hash, Clone, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialOrd, Ord)]
 pub enum Term {
-    Var(Name),
     Appl(PTerm, PTerm),
     Binder {
         binder: BinderKind,
@@ -39,12 +38,13 @@ pub enum Term {
         ty: PTerm,
         body: PTerm,
     },
-    TypeAnnotation(PTerm, PTerm),
     Prop,
-    Type,
-    StringLiteral(String),
     Str,
     StringAppend,
+    StringLiteral(String),
+    Type,
+    TypeAnnotation(PTerm, PTerm),
+    Var(Name),
 }
 
 fn result_combine<T, U, E>(
@@ -110,17 +110,49 @@ impl PartialEq for Term {
 
 impl Eq for Term {}
 
+impl std::hash::Hash for Term {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        core::mem::discriminant(self).hash(state);
+        match self {
+            Term::Var(_) => {}
+            Term::Binder {
+                binder,
+                param_name: _,
+                ty,
+                body,
+            } => {
+                binder.hash(state);
+                ty.hash(state);
+                body.hash(state);
+            }
+            Term::Prop => (),
+            Term::Type => (),
+            Term::TypeAnnotation(term, ty) => {
+                term.hash(state);
+                ty.hash(state);
+            }
+            Term::StringLiteral(s) => s.hash(state),
+            Term::Str => (),
+            Term::StringAppend => (),
+            Term::Appl(term1, term2) => {
+                term1.hash(state);
+                term2.hash(state);
+            }
+        }
+    }
+}
+
 impl Term {
     pub fn is_atom(&self) -> bool {
-        match self {
+        std::matches!(
+            self,
             Term::Var(_)
-            | Term::Prop
-            | Term::Type
-            | Term::StringAppend
-            | Term::StringLiteral(_)
-            | Term::Str => true,
-            _ => false,
-        }
+                | Term::Prop
+                | Term::Type
+                | Term::StringAppend
+                | Term::StringLiteral(_)
+                | Term::Str
+        )
     }
 
     pub fn free_vars(&self) -> Vec<Name> {
@@ -233,7 +265,7 @@ impl Term {
                 body,
             } if replacement.free_vars().contains(param_name) => {
                 // Change the parameter name and recurse.
-                let new_param_name: Name = format!("{}_", param_name).into();
+                let new_param_name: Name = format!("{param_name}_").into();
                 let new_binder_term = Binder {
                     binder: *binder,
                     param_name: new_param_name.clone(),
@@ -241,7 +273,7 @@ impl Term {
                     body: Self::substitute_or(
                         body.clone(),
                         param_name,
-                        Term::Var(new_param_name.clone()).into(),
+                        Term::Var(new_param_name).into(),
                     ),
                 };
                 Some(Self::substitute_or(
@@ -353,7 +385,7 @@ impl Term {
                     if let (StringAppend, StringLiteral(s1), StringLiteral(s2)) =
                         (func.as_ref(), arg1.as_ref(), rhs.as_ref())
                     {
-                        return Some(StringLiteral(format!("{}{}", s1, s2)).into());
+                        return Some(StringLiteral(format!("{s1}{s2}")).into());
                     }
                 }
 
@@ -380,7 +412,7 @@ impl Term {
 
                 Some(
                     Binder {
-                        binder: binder.clone(),
+                        binder: *binder,
                         param_name: param_name.clone(),
                         ty: ty.clone(),
                         body: body.clone(),
@@ -401,8 +433,8 @@ impl Term {
         match self {
             Var(var) => variable_types.get(var.as_ref()).cloned().ok_or_else(|| {
                 vec![format!(
-                    "You refered to a variable '{}' which does not exist in this context!",
-                    var
+                    "You refered to a variable '{var}' which does not exist \
+                    in this context!",
                 )]
             }),
             Appl(lhs, rhs) => {
@@ -421,16 +453,16 @@ impl Term {
                     // parameter.
                     if ty != &rhs_type {
                         return Err(vec![format!(
-                            "Argument type mismatch in {}: expected {}, found {}",
-                            self, ty, rhs_type
+                            "Argument type mismatch in {self}: \
+                             expected {ty}, found {rhs_type}",
                         )]);
                     }
 
                     Ok(Self::substitute_or(body.clone(), param_name, rhs_type))
                 } else {
                     Err(vec![format!(
-                        "Application of argument {} (type {}) to non-lambda {} (type {})",
-                        rhs, rhs_type, lhs, lhs_type,
+                        "Application of argument {rhs} (type {rhs_type}) \
+                         to non-lambda {lhs} (type {lhs_type})",
                     )])
                 }
             }
@@ -449,7 +481,7 @@ impl Term {
                     binder: BinderKind::Pi,
                     param_name: param_name.clone(),
                     ty: Rc::clone(ty),
-                    body: body_type.clone(),
+                    body: body_type,
                 };
                 // Make sure this binder type checks.
                 lam_type.infer_type_with_ctx(variable_types)?;
@@ -475,8 +507,7 @@ impl Term {
                 let term_type = term.infer_type_with_ctx(variable_types)?;
                 if term_type != *typ {
                     Err(vec![format!(
-                        "Type annotation mismatch: {} != {}",
-                        term_type, typ
+                        "Type annotation mismatch: {term_type} != {typ}",
                     )])
                 } else {
                     Ok(term_type)
@@ -495,8 +526,10 @@ impl Term {
                     param_name: "s2".into(),
                     ty: Str.into(),
                     body: Str.into(),
-                }.into(),
-            }.into()),
+                }
+                .into(),
+            }
+            .into()),
             // Type => Err(vec![format!("Type's type cannot be inferred")]),
         }
     }
@@ -652,19 +685,16 @@ impl Display for Term {
                 body,
             } => write!(
                 f,
-                "({}: {}) {} {}",
-                param_name,
-                ty,
-                match binder {
+                "({param_name}: {ty}) {arrow} {body}",
+                arrow = match binder {
                     BinderKind::Pi => "->",
                     BinderKind::Lam => "=>",
                 },
-                body,
             ),
-            TypeAnnotation(term, typ) => write!(f, "{} : {}", term, typ),
+            TypeAnnotation(term, typ) => write!(f, "{term} : {typ}"),
             Prop => write!(f, "prop"),
             Type => write!(f, "type"),
-            StringLiteral(s) => write!(f, "\"{}\"", s),
+            StringLiteral(s) => write!(f, "\"{s}\""),
             Str => write!(f, "str"),
             StringAppend => write!(f, "<string-append>"),
         }

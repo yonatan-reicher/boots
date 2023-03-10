@@ -231,7 +231,7 @@ fn identifier_or_keyword<'source>(
             c.is_ascii_alphanumeric() || c == '_' || c == '-'
         }
 
-        if peek(source, state).map(identifier_start).unwrap_or(false) == false {
+        if !peek(source, state).map(identifier_start).unwrap_or(false) {
             return None;
         }
 
@@ -249,13 +249,14 @@ fn identifier_or_keyword<'source>(
         Some(source[start..state.index].into())
     }
 
-    Some(IdentifierOrKeyword::Keyword(
+    use IdentifierOrKeyword::{Identifier as I, Keyword as K};
+    Some(
         match identifier(source, state)? {
-            "prop" => Keyword::Prop,
-            "type" => Keyword::Type,
-            ident => return Some(IdentifierOrKeyword::Identifier(ident.into())),
+            "prop" => K(Keyword::Prop),
+            "type" => K(Keyword::Type),
+            ident => I(ident),
         },
-    ))
+    )
 }
 
 /// Returns the rest of the string from the current position.
@@ -316,10 +317,9 @@ fn pop_no_indent(source: &str, state: &mut State) -> Option<char> {
 //fn skip_whitespace(source: &str, state: &mut State) {
 fn skip_whitespace1(source: &str, state: &mut State) {
     loop {
-        if line_peek(source, state)
+        if !line_peek(source, state)
             .map(char::is_whitespace)
             .unwrap_or(false)
-            == false
         {
             break;
         }
@@ -386,7 +386,7 @@ fn skip_whitespace(source: &str, state: &mut State) {
     loop {
         let ch = peek(source, state);
         // Stop if not whitespace or eol.
-        if ch.map(char::is_whitespace).unwrap_or(true) == false {
+        if !ch.map(char::is_whitespace).unwrap_or(true) {
             break;
         }
         if is_eof(source, state) {
@@ -411,5 +411,5 @@ fn pop_eq_str(source: &str, state: &mut State, string: &str) -> bool {
         }
     }
 
-    return true;
+    true
 }

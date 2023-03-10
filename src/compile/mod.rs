@@ -118,7 +118,7 @@ fn compile_closure_declarations(
                 struct_ptr_type.clone(),
                 name_gen,
             )),
-            Function(closure_make_function(closure, struct_ptr_type.clone())),
+            Function(closure_make_function(closure, struct_ptr_type)),
         ],
     )
 }
@@ -148,7 +148,7 @@ fn closure_struct(closure: &Closure, struct_ptr_type: c::PTypeExpr) -> c::TopLev
 
     // The type of the call field.
     let call_type: c::PTypeExpr = closure_call_type(
-        struct_ptr_type.clone(),
+        struct_ptr_type,
         closure.body.return_type.clone(),
         closure_parameter.0.clone(),
     )
@@ -197,7 +197,7 @@ fn closure_call_function(closure: &Closure, struct_ptr_type: c::PTypeExpr) -> c:
         return_type: closure.body.return_type.clone(),
         name: closure.call_name.clone(),
         parameters: vec![
-            (struct_ptr_type.clone(), "self".into()),
+            (struct_ptr_type, "self".into()),
             closure.body.parameters[0].clone(),
         ],
         body: Some(body),
@@ -243,9 +243,9 @@ fn closure_make_function(closure: &Closure, struct_ptr_type: c::PTypeExpr) -> c:
         .collect();
 
     c::Function {
-        return_type: struct_ptr_type.clone(),
+        return_type: struct_ptr_type,
         name: closure.make_name.clone(),
-        parameters: closure.body.parameters[1..].iter().cloned().collect(),
+        parameters: closure.body.parameters[1..].to_vec(),
         body: Some(body),
     }
 }
@@ -276,7 +276,7 @@ fn closure_drop_function(
                 closure
                     .captured_variables_types
                     .iter()
-                    .map(|(field_name, field_type, field_type_expr)| {
+                    .flat_map(|(field_name, field_type, field_type_expr)| {
                         let temp_name = name_gen.next(NameOptions::Var);
                         [self_
                             .var()
@@ -284,11 +284,10 @@ fn closure_drop_function(
                             .variable(temp_name.clone(), field_type_expr.clone())]
                         .extend_pipe(compile_drop(temp_name, field_type))
                     })
-                    .flatten()
                     // And clean up the memory holding the closure's struct!
                     .chain(["free".var().call([self_.var()]).stmt()])
                     .collect::<Vec<_>>(),
-                [rc.clone().dec().stmt()],
+                [rc.dec().stmt()],
             ),
         ]),
     }
@@ -311,13 +310,13 @@ fn compile_clone(var_c_name: Name, var_n_type: &Term) -> (c::Block, Name) {
 }
 
 fn compile_drop(var_name: Name, var_type: &Term) -> c::Block {
-    let var = var_name.clone().var();
+    let var = var_name.var();
     let drop = var.clone().arrow("drop");
     match var_type {
         Term::Binder {
             binder: BinderKind::Pi,
             ..
-        } => vec![drop.call([var.clone()]).stmt()],
+        } => vec![drop.call([var]).stmt()],
         Term::Str => vec!["dropStr".var().call([var]).stmt()],
         _ => vec![],
     }
@@ -448,7 +447,6 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
             let (func_perlude, func_var_name) = compile_expr(func.clone(), con);
             let func_type = func.infer_type_with_ctx(&mut con.n_vars).unwrap();
             let (arg_prelude, arg_var_name) = compile_expr(arg.clone(), con);
-            let arg_type = arg.infer_type_with_ctx(&mut con.n_vars).unwrap();
 
             // Call the function object with the argument.
             let output_var_name = con.name_gen.next(NameOptions::Var);
@@ -456,7 +454,7 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
                 .clone()
                 .var()
                 .arrow("call")
-                .call([func_var_name.clone().var(), arg_var_name.clone().var()])
+                .call([func_var_name.clone().var(), arg_var_name.var()])
                 .variable(
                     output_var_name.clone(),
                     compile_type_expr(&term_type, con).unwrap(),
@@ -487,7 +485,7 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
                 Term::Binder { body, .. } => body,
                 _ => unreachable!(),
             };
-            let body_c_type: c::PTypeExpr = compile_type_expr(&body_type, con).unwrap().into();
+            let body_c_type: c::PTypeExpr = compile_type_expr(body_type, con).unwrap().into();
 
             // Compile the body to an expression.
             let param_c_name = con.name_gen.next(NameOptions::Var);

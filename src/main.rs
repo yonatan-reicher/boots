@@ -43,7 +43,7 @@ mod repl {
 
             let source = buffer.trim();
 
-            let cont = eval(&source)?;
+            let cont = eval(source)?;
 
             if !cont {
                 break Ok(());
@@ -87,11 +87,11 @@ fn main() -> IORes<()> {
                 } else if source.chars().all(char::is_whitespace) {
                     return Ok(true);
                 }
-                let expr: PTerm = parse::parse(&source).expect("Failed to parse").into();
+                let expr: PTerm = parse::parse(source).expect("Failed to parse").into();
                 let typ = engine.infer_type(expr.clone()).expect("Failed to infer type");
-                println!("Type is {}", typ);
+                println!("Type is {typ}");
                 let evaluated = engine.eval(expr);
-                println!("{}", evaluated);
+                println!("{evaluated}");
                 Ok(true)
             })
         }
@@ -102,9 +102,9 @@ fn main() -> IORes<()> {
             let expr: PTerm = parse::parse(&source).unwrap().into();
             let ty = engine.infer_type(expr.clone()).unwrap();
             let evaluated = engine.eval(expr);
-            println!("{}", evaluated);
+            println!("{evaluated}");
             println!("Is of type:");
-            println!("{}", ty);
+            println!("{ty}");
             Ok(())
         }
         Action::Compile { filename } => {
@@ -112,8 +112,8 @@ fn main() -> IORes<()> {
             let expr: PTerm = parse::parse(&source).unwrap().into();
             let _ty = engine.infer_type(expr.clone()).unwrap();
             let evaluated = engine.eval(expr);
-            println!("{}", evaluated);
-            let program = engine.compile(evaluated.into());
+            println!("{evaluated}");
+            let program = engine.compile(evaluated);
             println!("{}", program.to_code());
             Ok(())
         }
