@@ -223,7 +223,6 @@ impl MultilineCode for Statement {
                 initializer,
             } => I::line(assignment_declaration_code(type_expression, name, initializer) + ";"),
             Statement::Assign(left, right) => {
-                // TODO: Check that left can be assigned.
                 I::line(format!("{} = {};", left.to_code(), right.to_code()))
             }
         }
