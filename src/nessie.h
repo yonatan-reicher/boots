@@ -89,7 +89,7 @@ str callAppendStrClosureInner(appendStrClosureInner *self, str var3) {
 
 void dropAppendStrClosureInner(void *void_self) {
     appendStrClosureInner *self = ((appendStrClosureInner*)void_self);
-    if ((self->rc == 0)) {
+    if (self->rc == 0) {
         dropStr(self->var2);
         free(self);
     } else {
@@ -98,7 +98,7 @@ void dropAppendStrClosureInner(void *void_self) {
 }
 
 appendStrClosureInner* makeAppendStrClosureInner(str var2) {
-    appendStrClosure *ret = ((appendStrClosureInner*)malloc(sizeof(appendStrClosureInner)));
+    appendStrClosureInner *ret = ((appendStrClosureInner*)malloc(sizeof(appendStrClosureInner)));
     ret->rc = 0;
     ret->call = callAppendStrClosureInner;
     ret->drop = dropAppendStrClosureInner;
@@ -112,7 +112,7 @@ appendStrClosureInnerHead* callAppendStrClosure(appendStrClosure *self, str x) {
 
 void dropAppendStrClosure(void *void_self) {
     appendStrClosure *self = ((appendStrClosure*)void_self);
-    if ((self->rc == 0)) {
+    if (self->rc == 0) {
         free(self);
     } else {
         self->rc--;

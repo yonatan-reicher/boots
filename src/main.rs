@@ -1,4 +1,6 @@
 mod c;
+mod lex;
+mod located;
 mod cli;
 mod compile;
 mod core;
