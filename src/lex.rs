@@ -1,4 +1,3 @@
-use indoc::indoc;
 use std::fmt::{self, Display, Formatter};
 
 use crate::global::*;
@@ -10,8 +9,10 @@ pub enum Token<'source> {
     Keyword(Keyword),
     Symbol(Symbol),
     NewLine(NewLine),
-    InvalidChar(char),
     String(&'source str), // TODO
+    Int(i32),             // TODO
+    InvalidChar(char),
+    UnteminatedString,
 }
 
 pub type LToken<'a> = L<Token<'a>>;
@@ -67,7 +68,8 @@ define_plain_enum! { pub enum Keyword {
 
 define_plain_enum! { pub enum Symbol {
     FatArrow "=>",
-    ThinArrow "->"
+    ThinArrow "->",
+    Equal "="
 } }
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
@@ -134,6 +136,16 @@ impl State {
         }
     }
 
+    fn pop(&mut self, s: &str) -> Option<char> {
+        self.line_pop(s).or_else(|| {
+            if self.pop_newline(s) {
+                Some('\n')
+            } else {
+                None
+            }
+        })
+    }
+
     fn identifier<'a>(&mut self, s: &'a str) -> Option<&'a str> {
         if identifier_start(self.curr_char(s)) {
             let start = self.index;
@@ -145,6 +157,52 @@ impl State {
         } else {
             None
         }
+    }
+
+    fn string<'source>(&mut self, s: &'source str) -> Option<Result<&'source str, ()>> {
+        if self.curr_char(s) != Some('"') {
+            return None;
+        }
+        // Skip over the qoute.
+        self.line_pop(s);
+
+        let start = self.index;
+        while !std::matches!(self.curr_char(s), Some('"') | None) {
+            self.pop(s);
+        }
+        let is_terminated = self.curr_char(s) == Some('"');
+        // Skip over the end qoute.
+        self.line_pop(s);
+
+        let end = self.index;
+        let string = &s[start..end];
+        is_terminated.then_some(string).ok_or(()).pipe(Some)
+    }
+
+    fn number(&mut self, s: &str) -> Option<i32> {
+        if !self
+            .curr_char(s)
+            .as_ref()
+            .map(char::is_ascii_digit)
+            .unwrap_or(false)
+        {
+            return None;
+        }
+
+        let start = self.index;
+        while self
+            .curr_char(s)
+            .as_ref()
+            .map(char::is_ascii_digit)
+            .unwrap_or(false)
+        {
+            self.line_pop(s);
+        }
+        let end = self.index;
+
+        let number = s[start..end].parse().unwrap();
+
+        Some(number)
     }
 
     fn range_start(&mut self) {
@@ -205,6 +263,22 @@ impl State {
             .pipe(Some);
         }
 
+        // Parse numbers.
+        if let Some(num) = self.number(s) {
+            return Token::Int(num).as_located(self.range()).pipe(Some);
+        }
+
+        // Parse strings.
+        if let Some(string) = self.string(s) {
+            return match string {
+                Ok(string) => Token::String(string),
+                Err(()) => Token::UnteminatedString,
+            }
+            .as_located(self.range())
+            .pipe(Some);
+        }
+
+        // Invalid char encountered.
         if let Some(ch) = self.curr_char(s) {
             self.line_pop(s);
             return Token::InvalidChar(ch).as_located(self.range()).pipe(Some);
@@ -242,6 +316,7 @@ fn identifier_continue(c: Option<char>) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use indoc::indoc;
 
     #[test]
     fn lex_empty() {
@@ -270,6 +345,16 @@ mod tests {
             let x = 5
         "};
 
-        assert_eq!(lex(source), vec![]);
+        assert_eq!(
+            lex(source),
+            vec![
+                Token::NewLine(NewLine::NewLine { indent: 0 }).as_located(0..0),
+                Token::Keyword(Keyword::Let).as_located(0..3),
+                Token::Ident("x").as_located(4..5),
+                Token::Symbol(Symbol::Equal).as_located(6..7),
+                Token::Int(5).as_located(8..9),
+                Token::NewLine(NewLine::EmptyLine).as_located(9..10),
+            ]
+        );
     }
 }
