@@ -1,4 +1,5 @@
 mod c;
+mod ast;
 mod lex;
 mod located;
 mod cli;

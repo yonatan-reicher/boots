@@ -9,8 +9,8 @@ pub enum Token<'source> {
     Keyword(Keyword),
     Symbol(Symbol),
     NewLine(NewLine),
-    String(&'source str), // TODO
-    Int(i32),             // TODO
+    String(&'source str),
+    Int(i32),            
     InvalidChar(char),
     UnteminatedString,
 }
@@ -61,21 +61,40 @@ macro_rules! define_plain_enum {
 }
 
 define_plain_enum! { pub enum Keyword {
-    Let "let",
-    Prop "prop",
-    Type "type"
+    Let "let"
 } }
 
 define_plain_enum! { pub enum Symbol {
     FatArrow "=>",
     ThinArrow "->",
-    Equal "="
+    Equal "=",
+    Colon ":",
+    OpenParen "(",
+    CloseParen ")"
 } }
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 pub enum NewLine {
     NewLine { indent: usize },
     EmptyLine,
+}
+
+impl<'a> From<NewLine> for Token<'a> {
+    fn from(value: NewLine) -> Self {
+        Self::NewLine(value)
+    }
+}
+
+impl<'a> From<Keyword> for Token<'a> {
+    fn from(value: Keyword) -> Self {
+        Self::Keyword(value)
+    }
+}
+
+impl<'a> From<Symbol> for Token<'a> {
+    fn from(value: Symbol) -> Self {
+        Self::Symbol(value)
+    }
 }
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug, Default)]
@@ -210,7 +229,7 @@ impl State {
     }
 
     fn range(&mut self) -> Range {
-        self.token_start..self.index
+        (self.token_start..self.index).into()
     }
 
     pub fn pop_token<'a>(&mut self, s: &'a str) -> Option<LToken<'a>> {
