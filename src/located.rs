@@ -26,6 +26,7 @@ impl Add<Range> for Range {
 pub struct Located<T>(pub T, pub Range);
 
 impl<T> Located<T> {
+    #[allow(dead_code)]
     pub fn map<U>(self, f: impl FnOnce(T) -> U) -> Located<U> {
         Located(f(self.0), self.1)
     }
@@ -45,10 +46,10 @@ impl<T> DerefMut for Located<T> {
     }
 }
 
-pub trait AsLocated<T>: Into<T> {
-    fn as_located(self, range: impl Into<Range>) -> Located<T> {
+pub trait IntoLocated<T>: Into<T> {
+    fn into_located(self, range: impl Into<Range>) -> Located<T> {
         Located(self.into(), range.into())
     }
 }
 
-impl<T> AsLocated<T> for T {}
+impl<T> IntoLocated<T> for T {}

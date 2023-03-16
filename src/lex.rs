@@ -1,7 +1,7 @@
 use std::fmt::{self, Display, Formatter};
 
 use crate::global::*;
-use crate::located::{AsLocated, Located as L, Range};
+use crate::located::{IntoLocated, Located as L, Range};
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]
 pub enum Token<'source> {
@@ -61,7 +61,8 @@ macro_rules! define_plain_enum {
 }
 
 define_plain_enum! { pub enum Keyword {
-    Let "let"
+    Prop "prop",
+    Type "type"
 } }
 
 define_plain_enum! { pub enum Symbol {
@@ -117,10 +118,14 @@ impl State {
 
     fn line_pop(&mut self, s: &str) -> Option<char> {
         let ret = self.curr_char(s);
-        if !std::matches!(ret, Some('\n' | '\r') | None) {
-            self.index += 1;
-            self.col += 1;
+
+        // Do not advance or return a value if at the end of the line.
+        if std::matches!(ret, Some('\n' | '\r') | None) {
+            return None;
         }
+
+        self.index += 1;
+        self.col += 1;
         ret
     }
 
@@ -225,6 +230,18 @@ impl State {
         Some(number)
     }
 
+    fn comment<'a>(&mut self, s: &'a str) -> Option<&'a str> {
+        if self.rest(s).starts_with("//") {
+            // The start of the comment comes after the '//'.
+            let start = self.index + 2;
+            // Skip until the end of the line. Do not skip the line break.
+            while self.line_pop(s).is_some() {}
+            Some(s[start..self.index].trim())
+        } else {
+            None
+        }
+    }
+
     fn range_start(&mut self) {
         self.token_start = self.index;
     }
@@ -236,12 +253,16 @@ impl State {
     pub fn pop_token<'a>(&mut self, s: &'a str) -> Option<LToken<'a>> {
         self.skip_space(s);
 
+        // Skip comments.
+        self.comment(s);
+
         self.range_start();
 
         // Newlines.
         if !self.began || self.pop_newline(s) {
             self.began = true;
             let spaces_skipped_at_start = self.skip_space(s);
+            self.comment(s);
             // Are we at the end of the line??
             let newline = if std::matches!(self.curr_char(s), None | Some('\r' | '\n')) {
                 NewLine::EmptyLine
@@ -252,7 +273,7 @@ impl State {
             };
             return newline
                 .pipe(Token::NewLine)
-                .as_located(self.range())
+                .into_located(self.range())
                 .pipe(Some);
         }
 
@@ -267,7 +288,7 @@ impl State {
             return Symbol::try_from(symbol)
                 .unwrap()
                 .pipe(Token::Symbol)
-                .as_located(self.range())
+                .into_located(self.range())
                 .pipe(Some);
         }
 
@@ -279,13 +300,13 @@ impl State {
             } else {
                 Token::Ident(ident)
             }
-            .as_located(self.range())
+            .into_located(self.range())
             .pipe(Some);
         }
 
         // Parse numbers.
         if let Some(num) = self.number(s) {
-            return Token::Int(num).as_located(self.range()).pipe(Some);
+            return Token::Int(num).into_located(self.range()).pipe(Some);
         }
 
         // Parse strings.
@@ -294,14 +315,14 @@ impl State {
                 Ok(string) => Token::String(string),
                 Err(()) => Token::UnteminatedString,
             }
-            .as_located(self.range())
+            .into_located(self.range())
             .pipe(Some);
         }
 
         // Invalid char encountered.
         if let Some(ch) = self.curr_char(s) {
             self.line_pop(s);
-            return Token::InvalidChar(ch).as_located(self.range()).pipe(Some);
+            return Token::InvalidChar(ch).into_located(self.range()).pipe(Some);
         }
 
         None
@@ -343,7 +364,7 @@ mod tests {
         let source = "";
         assert_eq!(
             lex(source),
-            vec![NewLine::EmptyLine.pipe(Token::NewLine).as_located(0..0)]
+            vec![NewLine::EmptyLine.pipe(Token::NewLine).into_located(0..0)]
         );
     }
 
@@ -353,27 +374,42 @@ mod tests {
         assert_eq!(
             lex(source),
             vec![
-                NewLine::EmptyLine.pipe(Token::NewLine).as_located(0..0),
-                NewLine::EmptyLine.pipe(Token::NewLine).as_located(0..1),
+                NewLine::EmptyLine.pipe(Token::NewLine).into_located(0..0),
+                NewLine::EmptyLine.pipe(Token::NewLine).into_located(0..1),
             ]
         );
     }
 
     #[test]
     fn test_lex() {
-        let source = indoc! {"
-            let x = 5
-        "};
+        let source = indoc! {r#"
+            x: prop = 5
+
+            y: type = x => "a"
+        "#};
 
         assert_eq!(
             lex(source),
             vec![
-                Token::NewLine(NewLine::NewLine { indent: 0 }).as_located(0..0),
-                Token::Keyword(Keyword::Let).as_located(0..3),
-                Token::Ident("x").as_located(4..5),
-                Token::Symbol(Symbol::Equal).as_located(6..7),
-                Token::Int(5).as_located(8..9),
-                Token::NewLine(NewLine::EmptyLine).as_located(9..10),
+                Token::NewLine(NewLine::NewLine { indent: 0 }).into_located(0..0),
+                Token::Ident("x").into_located(0..1),
+                Token::Symbol(Symbol::Colon).into_located(1..2),
+                Token::Keyword(Keyword::Prop).into_located(3..7),
+                Token::Symbol(Symbol::Equal).into_located(8..9),
+                Token::Int(5).into_located(10..11),
+
+                Token::NewLine(NewLine::EmptyLine).into_located(11..12),
+
+                Token::NewLine(NewLine::NewLine { indent: 0 }).into_located(12..13),
+                Token::Ident("y").into_located(13..14),
+                Token::Symbol(Symbol::Colon).into_located(14..15),
+                Token::Keyword(Keyword::Type).into_located(16..20),
+                Token::Symbol(Symbol::Equal).into_located(21..22),
+                Token::Ident("x").into_located(23..24),
+                Token::Symbol(Symbol::FatArrow).into_located(25..27),
+                Token::String("a").into_located(28..31),
+
+                Token::NewLine(NewLine::EmptyLine).into_located(31..32),
             ]
         );
     }

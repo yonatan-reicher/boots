@@ -297,7 +297,7 @@ fn compile_clone(var_c_name: Name, var_n_type: &Term) -> (c::Block, Name) {
     (
         match var_n_type {
             Term::Binder {
-                binder: BinderKind::Pi,
+                binder: BinderKind::Type,
                 ..
             } => vec![var_c_name.clone().var().arrow("rc").inc().stmt()],
             Term::Str => {
@@ -314,7 +314,7 @@ fn compile_drop(var_name: Name, var_type: &Term) -> c::Block {
     let drop = var.clone().arrow("drop");
     match var_type {
         Term::Binder {
-            binder: BinderKind::Pi,
+            binder: BinderKind::Type,
             ..
         } => vec![drop.call([var]).stmt()],
         Term::Str => vec!["dropStr".var().call([var]).stmt()],
@@ -472,7 +472,7 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
             )
         }
         Term::Binder {
-            binder: BinderKind::Lam,
+            binder: BinderKind::Value,
             param_name,
             ty,
             body,
@@ -554,7 +554,7 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
             // Return a variable referencing the function.
             (vec![set_output], output_var_name)
         }
-        Term::Binder { binder: BinderKind::Pi, .. } => panic!(),
+        Term::Binder { binder: BinderKind::Type, .. } => panic!(),
         Term::Prop => (vec![], "prop".into()),
         Term::Type => (vec![], "type".into()),
         Term::StringLiteral(string) => {
@@ -582,7 +582,7 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
                 compile_expr(body.clone(), con)
             });
 
-            let var_drop = compile_drop(var_name.clone(), &typ);
+            let var_drop = compile_drop(var_name, &typ);
 
             let prelude = rhs_prelude.extend_pipe(body_prelude).extend_pipe(var_drop);
 
@@ -597,7 +597,7 @@ fn compile_type_expr(term: &Term, con: &mut Context) -> Result<c::TypeExpr, ()> 
         Term::Prop => Ok(c::TypeExpr::Var("prop".into())),
         Term::Type => Ok(c::TypeExpr::Var("type".into())),
         Term::Binder {
-            binder: BinderKind::Pi,
+            binder: BinderKind::Type,
             param_name: _,
             ty,
             body,

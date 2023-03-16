@@ -6,20 +6,9 @@ use crate::name::Name;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum BinderKind {
-    Lam,
-    Pi,
+    Value,
+    Type,
 }
-
-/*
-impl Display for BinderKind {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        match self {
-            BinderKind::Lam => write!(f, "λ"),
-            BinderKind::Pi => write!(f, "Π"),
-        }
-    }
-}
-*/
 
 pub type PTerm = Rc<Term>;
 
@@ -269,13 +258,32 @@ impl Term {
                 ),
             },
             Let(bind_name, annotation, rhs, body) if bind_name == name => {
-                let rhs_new = Self::substitute_or(rhs.clone(), name, replacement);
-                todo!()
+                // Don't make a substitution in the body!
+                let rhs = Self::substitute_or(rhs.clone(), name, replacement.clone());
+                let annotation = annotation
+                    .clone()
+                    .map(|a| Self::substitute_or(a, name, replacement));
+                Some(Let(bind_name.clone(), annotation, rhs, body.clone()).into())
             }
             Let(bind_name, annotation, rhs, body)
                 if replacement.free_vars().contains(bind_name) =>
             {
-                todo!()
+                let rhs = Self::substitute_or(rhs.clone(), name, replacement.clone());
+                let annotation = annotation
+                    .clone()
+                    .map(|a| Self::substitute_or(a, name, replacement.clone()));
+
+                // First replace the name of the bound variable, then do the replacement on the
+                // body.
+                let new_bind_name = make_name_unique(bind_name);
+                let new_body = Self::substitute_or(
+                    body.clone(),
+                    bind_name,
+                    Term::Var(new_bind_name.clone()).into(),
+                )
+                .pipe(|body| Self::substitute_or(body, name, replacement));
+
+                Some(Let(new_bind_name, annotation, rhs, new_body).into())
             }
             Let(bind_name, annotation, rhs, body) => {
                 let rhs_new = Self::substitute_or(rhs.clone(), name, replacement.clone());
@@ -306,7 +314,7 @@ impl Term {
                 body,
             } if replacement.free_vars().contains(param_name) => {
                 // Change the parameter name and recurse.
-                let new_param_name: Name = format!("{param_name}_").into();
+                let new_param_name = make_name_unique(param_name);
                 let new_binder_term = Binder {
                     binder: *binder,
                     param_name: new_param_name.clone(),
@@ -447,6 +455,16 @@ impl Term {
                 let ty = ty_new.as_ref().unwrap_or(ty);
                 let body = body_new.as_ref().unwrap_or(body);
 
+                // meu-reduction
+                // (x => f x) = f
+                if let Appl(func, arg) = body.as_ref() {
+                    if let Var(arg_var) = arg.as_ref() {
+                        if arg_var == param_name {
+                            return func.clone().pipe(Some);
+                        }
+                    }
+                }
+
                 if ty_new.is_none() && body_new.is_none() {
                     return None;
                 }
@@ -462,7 +480,7 @@ impl Term {
                 )
             }
             Let(name, _, rhs, body) => Self::substitute_or(body.clone(), name, rhs.clone())
-                .pipe(|x| Self::eval_or(x))
+                .pipe(Self::eval_or)
                 .pipe(Some),
             TypeAnnotation(term, _) => term.eval(),
             Prop | Type | Var(_) | StringLiteral(_) | Str | StringAppend => None,
@@ -487,7 +505,7 @@ impl Term {
                     rhs.infer_type_with_ctx(variable_types),
                 )?;
                 if let Binder {
-                    binder: BinderKind::Pi,
+                    binder: BinderKind::Type,
                     param_name,
                     ty,
                     body,
@@ -511,7 +529,7 @@ impl Term {
                 }
             }
             Binder {
-                binder: BinderKind::Lam,
+                binder: BinderKind::Value,
                 param_name,
                 ty,
                 body,
@@ -522,7 +540,7 @@ impl Term {
                 });
                 // The lambda's type is a pi type.
                 let lam_type = Binder {
-                    binder: BinderKind::Pi,
+                    binder: BinderKind::Type,
                     param_name: param_name.clone(),
                     ty: Rc::clone(ty),
                     body: body_type,
@@ -532,7 +550,7 @@ impl Term {
                 Ok(Self::eval_or(lam_type.into()))
             }
             Binder {
-                binder: BinderKind::Pi,
+                binder: BinderKind::Type,
                 param_name,
                 ty,
                 body,
@@ -562,11 +580,11 @@ impl Term {
             StringLiteral(_) => Ok(Str.into()),
             Str => Ok(Type.into()),
             StringAppend => Ok(Binder {
-                binder: BinderKind::Pi,
+                binder: BinderKind::Type,
                 param_name: "s1".into(),
                 ty: Str.into(),
                 body: Binder {
-                    binder: BinderKind::Pi,
+                    binder: BinderKind::Type,
                     param_name: "s2".into(),
                     ty: Str.into(),
                     body: Str.into(),
@@ -727,7 +745,7 @@ impl Display for Term {
                 }
             }
             Binder {
-                binder: BinderKind::Pi,
+                binder: BinderKind::Type,
                 param_name,
                 ty,
                 body,
@@ -743,8 +761,8 @@ impl Display for Term {
                 f,
                 "({param_name}: {ty}) {arrow} {body}",
                 arrow = match binder {
-                    BinderKind::Pi => "->",
-                    BinderKind::Lam => "=>",
+                    BinderKind::Type => "->",
+                    BinderKind::Value => "=>",
                 },
             ),
             TypeAnnotation(term, typ) => write!(f, "{term} : {typ}"),
@@ -759,4 +777,8 @@ impl Display for Term {
             Let(name, None, rhs, body) => write!(f, "(let {name} = {rhs} in {body})",),
         }
     }
+}
+
+fn make_name_unique(name: &str) -> Name {
+    Name::from(format!("{name}^"))
 }

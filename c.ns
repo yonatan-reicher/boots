@@ -1,4 +1,4 @@
 (x: prop) => (y: prop) => ((y: prop) => (x: prop) => y) x y
-This program is bugged!
-For example - this one works correctly even though they are identical:
-(x: prop) => (y: prop) => ((a: prop) => (b: prop) => a) x y
+// This program is bugged!
+// For example - this one works correctly even though they are identical:
+// (x: prop) => (y: prop) => ((a: prop) => (b: prop) => a) x y

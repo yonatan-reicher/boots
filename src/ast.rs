@@ -18,6 +18,8 @@ pub enum Ast {
 pub enum Literal {
     String(String),
     Int(i32),
+    Prop,
+    Type,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]

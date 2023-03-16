@@ -1,5 +1,5 @@
 use crate::ast::{ArrowType, Ast, Literal};
-use crate::lex::{lex, LToken, NewLine, Symbol, Token};
+use crate::lex::{lex, LToken, NewLine, Symbol, Token, Keyword};
 use crate::located::{Pos, Range};
 use crate::name::Name;
 
@@ -300,6 +300,14 @@ fn literal(tokens: &mut TokenReader) -> Option<Literal> {
 
     if let Some(int) = tokens.pop_token_int() {
         return Some(Literal::Int(int));
+    }
+
+    if tokens.pop_token_eq(Token::Keyword(Keyword::Type)) {
+        return Some(Literal::Type);
+    }
+
+    if tokens.pop_token_eq(Token::Keyword(Keyword::Prop)) {
+        return Some(Literal::Prop);
     }
 
     None
