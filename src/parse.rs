@@ -1,8 +1,9 @@
 use crate::ast::{ArrowType, Ast, Literal};
-use crate::lex::{lex, LToken, NewLine, Symbol, Token, Keyword};
+use crate::lex::{lex, LToken, NewLine, Symbol, Token};
 use crate::located::{Pos, Range};
+use crate::name::Name;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
     TermNotFound(Pos),
     UnclosedParenthesis {
@@ -12,9 +13,12 @@ pub enum Error {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
 struct TokenReader<'source> {
     tokens: Vec<LToken<'source>>,
     index: usize,
+    indent: usize,
+    parens_depth: usize,
     errors: Vec<Error>,
 }
 
@@ -23,6 +27,8 @@ impl<'source> TokenReader<'source> {
         Self {
             tokens,
             index: 0,
+            indent: 0,
+            parens_depth: 0,
             errors: Vec::new(),
         }
     }
@@ -32,9 +38,19 @@ impl<'source> TokenReader<'source> {
     }
 
     pub fn pop(&mut self) -> Option<LToken<'source>> {
-        let token = self.current();
+        let ret = self.current();
         self.index += 1;
-        token
+        // Update the indent tracker.
+        let token: Option<Token> = ret.as_deref().cloned();
+        if let Some(Token::NewLine(NewLine::NewLine { indent })) = token {
+            self.indent = indent;
+        } else if let Some(Token::Symbol(Symbol::CloseParen)) = token {
+            self.parens_depth -= 1;
+        } else if let Some(Token::Symbol(Symbol::OpenParen)) = token {
+            self.parens_depth += 1;
+        }
+        // Update the parens tracker.
+        ret
     }
 
     pub fn pop_token(&mut self) -> Option<Token<'source>> {
@@ -106,6 +122,34 @@ impl<'source> TokenReader<'source> {
         }
     }
 
+    fn pop_indent_helper(&mut self, predicate: impl FnOnce(usize, usize) -> bool) -> bool {
+        let start_indent = self.indent;
+        let init_state = self.clone();
+        let ret = self
+            .pop_token_newline()
+            .map(|newline| match newline {
+                NewLine::NewLine { indent } => predicate(indent, start_indent),
+                NewLine::EmptyLine => self.pop_indent_in(),
+            })
+            .unwrap_or(false);
+        if !ret {
+            *self = init_state;
+        }
+        ret
+    }
+
+    pub fn pop_indent_in(&mut self) -> bool {
+        self.pop_indent_helper(|indent, start_indent| indent > start_indent)
+    }
+
+    pub fn pop_indent_same(&mut self, to_indent: usize) -> bool {
+        self.pop_indent_helper(|indent, _| indent == to_indent)
+    }
+
+    pub fn pop_indent(&mut self) -> bool {
+        self.pop_indent_helper(|_, _| true)
+    }
+
     pub fn error(&mut self, error: Error) {
         self.errors.push(error);
     }
@@ -114,6 +158,9 @@ impl<'source> TokenReader<'source> {
 /// Parses a program from a source code string.
 pub fn parse(source: &str) -> Result<Ast, Vec<Error>> {
     let mut tokens = TokenReader::new(lex(source));
+
+    // Read until start of term line.
+    tokens.pop_indent_same(0);
 
     // For now just parse a single term.
     let the_term = term(&mut tokens);
@@ -138,37 +185,54 @@ fn term(tokens: &mut TokenReader) -> Ast {
     };
 
     if tokens.pop_token_eq(Symbol::FatArrow) {
+        // Allow indenting in!
+        tokens.pop_indent_in();
         let ret = term(tokens);
         return Ast::Arrow(ArrowType::Value, first_atom.into(), ret.into());
     }
 
     if tokens.pop_token_eq(Symbol::ThinArrow) {
+        // Allow indenting in!
+        tokens.pop_indent_in();
         let ret = term(tokens);
         return Ast::Arrow(ArrowType::Type, first_atom.into(), ret.into());
     }
 
     if tokens.pop_token_eq(Token::Symbol(Symbol::Colon)) {
+        // Allow indenting in!
+        tokens.pop_indent_in();
         let typ = term(tokens);
         return Ast::TypeAnnotation(first_atom.into(), typ.into());
     }
 
     // Then, parse a list of more atoms!
-    let mut applications = vec![];
-    while let Some(next_atom) = atom(tokens) {
-        applications.push(next_atom);
+    let second_atom = atom_after_linebreak(tokens);
+    let mut rest_of_applications = vec![];
+    if second_atom.is_some() {
+        while let Some(next_atom) = atom_after_linebreak(tokens) {
+            rest_of_applications.push(next_atom);
+        }
     }
 
-    let applicationTerm = applications
-        .into_iter()
-        .fold(first_atom, |acc, atom| Ast::Appl(acc.into(), atom.into()))
+    // Combine the atoms into a single term.
+    let application_term = match second_atom {
+        Some(second_atom) => Ast::Appl(first_atom.into(), second_atom.into(), rest_of_applications),
+        None => first_atom,
+    };
 
     // Is this a assign expression?
     if tokens.pop_token_eq(Symbol::Equal) {
+        let start_indent = tokens.indent;
+        tokens.pop_indent_in(); // Fine if this fails.
         let rhs = term(tokens);
-        return Ast::Let(applictionTerm
+        if !tokens.pop_indent_same(start_indent) {
+            todo!("error: expected expression with same indent");
+        }
+        let ret = term(tokens);
+        return Ast::Let(application_term.into(), rhs.into(), ret.into());
     }
 
-    applicationTerm
+    application_term
 }
 
 /// Parses an atom from the current position.
@@ -176,11 +240,19 @@ fn atom(tokens: &mut TokenReader) -> Option<Ast> {
     let start = tokens.get_range(tokens.index).0;
 
     if let Some(literal) = literal(tokens) {
-        return Some(Ast::Literal(literal));
+        return Some(Ast::Literal(literal, (start..tokens.prev_range().1).into()));
     }
 
     if tokens.pop_token_eq(Symbol::OpenParen) {
+        // Allow newlines after the opening parenthesis.
+        tokens.pop_indent();
+
+        // Parse the term.
         let term = term(tokens);
+
+        // skip more linebreaks.
+        tokens.pop_indent();
+        
         if !tokens.pop_token_eq(Symbol::CloseParen) {
             let expected_close = tokens.get_range(tokens.index).0;
             // Try to find where the parenthesis is closed.
@@ -201,10 +273,24 @@ fn atom(tokens: &mut TokenReader) -> Option<Ast> {
     }
 
     if let Some(ident) = tokens.pop_token_ident() {
-        return Some(Ast::Var(ident.into(), tokens.prev_range()));
+        return Some(Ast::Var(Name::from_str(ident), tokens.prev_range()));
     }
 
     None
+}
+
+fn atom_after_linebreak(tokens: &mut TokenReader) -> Option<Ast> {
+    let initial_state = tokens.clone();
+
+    tokens.pop_indent_same(tokens.indent);
+    let atom = atom(tokens);
+
+    // If parsing the atom failed, we go back to the initial state.
+    if atom.is_none() {
+        *tokens = initial_state;
+    }
+
+    atom
 }
 
 fn literal(tokens: &mut TokenReader) -> Option<Literal> {
@@ -217,4 +303,38 @@ fn literal(tokens: &mut TokenReader) -> Option<Literal> {
     }
 
     None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use indoc::indoc;
+
+    fn r(x: impl Into<Range>) -> Range {
+        x.into()
+    }
+
+    #[test]
+    fn test_1() {
+        let source = indoc! {r#"
+            (x: str) => string-append x "!"
+        "#};
+        assert_eq!(
+            parse(source),
+            Ok(Ast::Arrow(
+                ArrowType::Value,
+                Ast::TypeAnnotation(
+                    Ast::Var("x".into(), r(1..2)).into(),
+                    Ast::Var("str".into(), r(4..7)).into()
+                )
+                .into(),
+                Ast::Appl(
+                    Ast::Var("string-append".into(), r(12..25)).into(),
+                    Ast::Var("x".into(), r(26..27)).into(),
+                    vec![Ast::Literal(Literal::String("!".into()), r(28..31))]
+                )
+                .into(),
+            ))
+        );
+    }
 }

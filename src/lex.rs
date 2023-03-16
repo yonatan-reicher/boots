@@ -190,10 +190,11 @@ impl State {
             self.pop(s);
         }
         let is_terminated = self.curr_char(s) == Some('"');
+        let end = self.index;
+
         // Skip over the end qoute.
         self.line_pop(s);
 
-        let end = self.index;
         let string = &s[start..end];
         is_terminated.then_some(string).ok_or(()).pipe(Some)
     }

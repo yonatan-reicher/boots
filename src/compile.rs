@@ -554,6 +554,7 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
             // Return a variable referencing the function.
             (vec![set_output], output_var_name)
         }
+        Term::Binder { binder: BinderKind::Pi, .. } => panic!(),
         Term::Prop => (vec![], "prop".into()),
         Term::Type => (vec![], "type".into()),
         Term::StringLiteral(string) => {
@@ -570,7 +571,23 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
             vec!["appendStrClosure".var().arrow("rc").inc().stmt()],
             "appendStrClosure".into(),
         ),
-        _ => todo!(),
+        Term::Str => todo!(),
+        Term::TypeAnnotation(x, _) => compile_expr(x.clone(), con),
+        Term::Let(name, _, rhs, body) => {
+            let (rhs_prelude, var_name) = compile_expr(rhs.clone(), con);
+
+            let typ = rhs.infer_type_with_ctx(&mut con.n_vars).unwrap();
+
+            let (body_prelude, body_ret_name) = with_variable!(con.n_vars, (name, typ.clone()), {
+                compile_expr(body.clone(), con)
+            });
+
+            let var_drop = compile_drop(var_name.clone(), &typ);
+
+            let prelude = rhs_prelude.extend_pipe(body_prelude).extend_pipe(var_drop);
+
+            (prelude, body_ret_name)
+        }
     }
 }
 
@@ -601,9 +618,3 @@ fn compile_type_expr(term: &Term, con: &mut Context) -> Result<c::TypeExpr, ()> 
         _ => Err(()),
     }
 }
-/*
-            let body_type = body.infer_type_with_ctx(var_types).unwrap();
-            let free_vars = body.free_vars();
-            let ret_c_type = compile_type_expr() body.
-            funcs.add(free_vars, )
-*/

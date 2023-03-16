@@ -1,7 +1,7 @@
 use std::fmt::{self, Display, Formatter};
 use std::rc::Rc;
 
-use crate::global::{extend, with_variable};
+use crate::global::*;
 use crate::name::Name;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -45,6 +45,7 @@ pub enum Term {
     Type,
     TypeAnnotation(PTerm, PTerm),
     Var(Name),
+    Let(Name, Option<PTerm>, PTerm, PTerm),
 }
 
 fn result_combine<T, U, E>(
@@ -90,6 +91,14 @@ impl PartialEq for Term {
                     ) == *body1
             }
             (Binder { .. }, _) => false,
+            (Let(name1, annotation1, rhs1, body1), Let(name2, annotation2, rhs2, body2)) => {
+                name1 == name2
+                    && annotation1 == annotation2
+                    && rhs1 == rhs2
+                    && Self::substitute_or(body2.clone(), name2, Var(name1.clone()).into())
+                        == *body1
+            }
+            (Let(_, _, _, _), _) => false,
             (Prop, Prop) => true,
             (Prop, _) => false,
             (Type, Type) => true,
@@ -138,6 +147,11 @@ impl std::hash::Hash for Term {
                 term1.hash(state);
                 term2.hash(state);
             }
+            Term::Let(name, _, rhs, body) => {
+                name.hash(state);
+                rhs.hash(state);
+                body.hash(state);
+            }
         }
     }
 }
@@ -173,6 +187,16 @@ impl Term {
             ),
             TypeAnnotation(term, ty) => extend(term.free_vars(), ty.free_vars()),
             Prop | Type | StringLiteral(_) | Str | StringAppend => vec![],
+            Let(name, annotation, rhs, body) => annotation
+                .as_ref()
+                .map(|x| x.free_vars())
+                .unwrap_or_default()
+                .extend_pipe(rhs.free_vars())
+                .extend_pipe(
+                    body.free_vars()
+                        .into_iter()
+                        .filter(|var_ident| var_ident != name),
+                ),
         }
     }
 
@@ -244,6 +268,23 @@ impl Term {
                     .into(),
                 ),
             },
+            Let(bind_name, annotation, rhs, body) if bind_name == name => {
+                let rhs_new = Self::substitute_or(rhs.clone(), name, replacement);
+                todo!()
+            }
+            Let(bind_name, annotation, rhs, body)
+                if replacement.free_vars().contains(bind_name) =>
+            {
+                todo!()
+            }
+            Let(bind_name, annotation, rhs, body) => {
+                let rhs_new = Self::substitute_or(rhs.clone(), name, replacement.clone());
+                let body_new = Self::substitute_or(body.clone(), name, replacement.clone());
+                let annotation_new = annotation
+                    .as_ref()
+                    .map(|ty| Self::substitute_or(ty.clone(), name, replacement));
+                Some(Let(bind_name.clone(), annotation_new, rhs_new, body_new).into())
+            }
             Binder {
                 binder,
                 param_name,
@@ -420,6 +461,9 @@ impl Term {
                     .into(),
                 )
             }
+            Let(name, _, rhs, body) => Self::substitute_or(body.clone(), name, rhs.clone())
+                .pipe(|x| Self::eval_or(x))
+                .pipe(Some),
             TypeAnnotation(term, _) => term.eval(),
             Prop | Type | Var(_) | StringLiteral(_) | Str | StringAppend => None,
         }
@@ -530,7 +574,19 @@ impl Term {
                 .into(),
             }
             .into()),
-            // Type => Err(vec![format!("Type's type cannot be inferred")]),
+            Let(name, annotation, rhs, body) => {
+                let rhs_type = rhs.infer_type_with_ctx(variable_types)?;
+                if let Some(annotation) = annotation {
+                    if rhs_type != *annotation {
+                        return Err(vec![format!(
+                            "Type annotation mismatch: {rhs_type} != {annotation}",
+                        )]);
+                    }
+                }
+                with_variable!(variable_types, (name, rhs_type), {
+                    body.infer_type_with_ctx(variable_types)
+                })
+            } // Type => Err(vec![format!("Type's type cannot be inferred")]),
         }
     }
 
@@ -697,6 +753,10 @@ impl Display for Term {
             StringLiteral(s) => write!(f, "\"{s}\""),
             Str => write!(f, "str"),
             StringAppend => write!(f, "<string-append>"),
+            Let(name, Some(annotation), rhs, body) => {
+                write!(f, "(let {name} : {annotation} = {rhs} in {body})",)
+            }
+            Let(name, None, rhs, body) => write!(f, "(let {name} = {rhs} in {body})",),
         }
     }
 }

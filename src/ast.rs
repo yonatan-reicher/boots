@@ -1,14 +1,15 @@
 use crate::located::Range;
+use crate::name::Name;
 
 pub type PAst = Box<Ast>;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Ast {
-    Var(String, Range),
-    Appl(PAst, PAst),
+    Var(Name, Range),
+    Appl(PAst, PAst, Vec<Ast>),
     Arrow(ArrowType, PAst, PAst),
     TypeAnnotation(PAst, PAst),
-    Literal(Literal),
+    Literal(Literal, Range),
     Let(PAst, PAst, PAst),
     Error,
 }

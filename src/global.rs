@@ -48,3 +48,30 @@ pub trait Pipe<T, U>: Into<T> {
 }
 
 impl<T, U> Pipe<T, U> for T {}
+
+pub fn collect_results<T, E>(results: impl IntoIterator<Item = Result<T, E>>) -> Result<Vec<T>, Vec<E>> {
+    let mut ret: Result<Vec<_>, Vec<_>> = Ok(vec![]);
+
+    for result in results {
+        match result {
+            Ok(x) => ret = ret.map(|mut v| {
+                v.push(x);
+                v
+            }),
+            Err(e) => ret = ret.map_err(|mut v| {
+                v.push(e);
+                v
+            }),
+        }
+    }
+
+    ret
+}
+
+pub fn destruct<T, U, E: Copy>(result: Result<(T, U), E>) -> (Result<T, E>, Result<U, E>) {
+    match result {
+        Ok((t, u)) => (Ok(t), Ok(u)),
+        Err(e) => (Err(e), Err(e)),
+    }
+}
+

@@ -1,4 +1,5 @@
 mod c;
+mod to_core;
 mod ast;
 mod lex;
 mod located;
@@ -90,7 +91,8 @@ fn main() -> IORes<()> {
                 } else if source.chars().all(char::is_whitespace) {
                     return Ok(true);
                 }
-                let expr: PTerm = parse::parse(source).expect("Failed to parse").into();
+                let ast = parse::parse(source).expect("Failed to parse");
+                let expr: PTerm = to_core::to_core(&ast).unwrap();
                 let typ = engine.infer_type(expr.clone()).expect("Failed to infer type");
                 println!("Type is {typ}");
                 let evaluated = engine.eval(expr);
@@ -102,7 +104,8 @@ fn main() -> IORes<()> {
             filename: Some(filename),
         } => {
             let source = fs::read_to_string(filename)?;
-            let expr: PTerm = parse::parse(&source).unwrap().into();
+            let ast = parse::parse(&source).unwrap();
+            let expr: PTerm = to_core::to_core(&ast).unwrap();
             let ty = engine.infer_type(expr.clone()).unwrap();
             let evaluated = engine.eval(expr);
             println!("{evaluated}");
@@ -112,7 +115,8 @@ fn main() -> IORes<()> {
         }
         Action::Compile { filename } => {
             let source = fs::read_to_string(filename)?;
-            let expr: PTerm = parse::parse(&source).unwrap().into();
+            let ast = parse::parse(&source).unwrap();
+            let expr: PTerm = to_core::to_core(&ast).unwrap();
             let _ty = engine.infer_type(expr.clone()).unwrap();
             let evaluated = engine.eval(expr);
             println!("{evaluated}");
