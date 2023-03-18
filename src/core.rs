@@ -1,11 +1,12 @@
 use std::fmt::{self, Display, Formatter};
+use std::hash::{Hash, Hasher};
 use std::rc::Rc;
 
 use crate::global::*;
 use crate::name::Name;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub enum BinderKind {
+pub enum ArrowKind {
     Value,
     Type,
 }
@@ -14,6 +15,8 @@ pub type PTerm = Rc<Term>;
 
 pub type TypeContext = std::collections::HashMap<Name, PTerm>;
 
+// TODO: Is our PartialOrd valid? Because we have overriden partial eq.
+// Aternatively, do not implement PartialOrd and PartialEq at all.
 /**
  * The syntax of our calculus. Notice that types are represented in the same way
  * as terms, which is the essence of CoC.
@@ -21,20 +24,37 @@ pub type TypeContext = std::collections::HashMap<Name, PTerm>;
 #[derive(Debug, Clone, PartialOrd, Ord)]
 pub enum Term {
     Appl(PTerm, PTerm),
-    Binder {
-        binder: BinderKind,
+    Arrow {
+        kind: ArrowKind,
         param_name: Name,
         ty: PTerm,
         body: PTerm,
     },
-    Prop,
-    Str,
-    StringAppend,
-    StringLiteral(String),
-    Type,
+    Literal(Literal),
     TypeAnnotation(PTerm, PTerm),
     Var(Name),
     Let(Name, Option<PTerm>, PTerm, PTerm),
+}
+
+#[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Literal {
+    Prop,
+    Str,
+    StringAppend,
+    String(Name),
+    Type,
+}
+
+impl From<Literal> for Term {
+    fn from(literal: Literal) -> Self {
+        Term::Literal(literal)
+    }
+}
+
+impl From<Literal> for PTerm {
+    fn from(literal: Literal) -> Self {
+        Rc::new(literal.into())
+    }
 }
 
 fn result_combine<T, U, E>(
@@ -58,14 +78,14 @@ impl PartialEq for Term {
             (Appl(left1, right1), Appl(left2, right2)) => left1 == left2 && right1 == right2,
             (Appl(_, _), _) => false,
             (
-                Binder {
-                    binder: binder1,
+                Arrow {
+                    kind: binder1,
                     param_name: param_name1,
                     ty: ty1,
                     body: body1,
                 },
-                Binder {
-                    binder: binder2,
+                Arrow {
+                    kind: binder2,
                     param_name: param_name2,
                     ty: ty2,
                     body: body2,
@@ -79,7 +99,7 @@ impl PartialEq for Term {
                         Var(param_name1.clone()).into(),
                     ) == *body1
             }
-            (Binder { .. }, _) => false,
+            (Arrow { .. }, _) => false,
             (Let(name1, annotation1, rhs1, body1), Let(name2, annotation2, rhs2, body2)) => {
                 name1 == name2
                     && annotation1 == annotation2
@@ -88,33 +108,25 @@ impl PartialEq for Term {
                         == *body1
             }
             (Let(_, _, _, _), _) => false,
-            (Prop, Prop) => true,
-            (Prop, _) => false,
-            (Type, Type) => true,
-            (Type, _) => false,
+            (Literal(l), Literal(r)) => l == r,
+            (Literal(_), _) => false,
             (TypeAnnotation(term1, type1), TypeAnnotation(term2, type2)) => {
                 term1 == term2 && type1 == type2
             }
             (TypeAnnotation(_, _), _) => false,
-            (StringLiteral(s1), StringLiteral(s2)) => s1 == s2,
-            (StringLiteral(_), _) => false,
-            (Str, Str) => true,
-            (Str, _) => false,
-            (StringAppend, StringAppend) => true,
-            (StringAppend, _) => false,
         }
     }
 }
 
 impl Eq for Term {}
 
-impl std::hash::Hash for Term {
-    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+impl Hash for Term {
+    fn hash<H: Hasher>(&self, state: &mut H) {
         core::mem::discriminant(self).hash(state);
         match self {
             Term::Var(_) => {}
-            Term::Binder {
-                binder,
+            Term::Arrow {
+                kind: binder,
                 param_name: _,
                 ty,
                 body,
@@ -123,15 +135,11 @@ impl std::hash::Hash for Term {
                 ty.hash(state);
                 body.hash(state);
             }
-            Term::Prop => (),
-            Term::Type => (),
             Term::TypeAnnotation(term, ty) => {
                 term.hash(state);
                 ty.hash(state);
             }
-            Term::StringLiteral(s) => s.hash(state),
-            Term::Str => (),
-            Term::StringAppend => (),
+            Term::Literal(l) => l.hash(state),
             Term::Appl(term1, term2) => {
                 term1.hash(state);
                 term2.hash(state);
@@ -147,15 +155,7 @@ impl std::hash::Hash for Term {
 
 impl Term {
     pub fn is_atom(&self) -> bool {
-        std::matches!(
-            self,
-            Term::Var(_)
-                | Term::Prop
-                | Term::Type
-                | Term::StringAppend
-                | Term::StringLiteral(_)
-                | Term::Str
-        )
+        matches!(self, Term::Literal(_) | Term::Var(_))
     }
 
     pub fn free_vars(&self) -> Vec<Name> {
@@ -163,7 +163,7 @@ impl Term {
         match self {
             Var(var) => vec![var.clone()],
             Appl(lhs, rhs) => extend(lhs.free_vars(), rhs.free_vars()),
-            Binder {
+            Arrow {
                 param_name: name,
                 ty,
                 body,
@@ -175,7 +175,7 @@ impl Term {
                     .filter(|var_ident| var_ident != name),
             ),
             TypeAnnotation(term, ty) => extend(term.free_vars(), ty.free_vars()),
-            Prop | Type | StringLiteral(_) | Str | StringAppend => vec![],
+            Literal(_) => vec![],
             Let(name, annotation, rhs, body) => annotation
                 .as_ref()
                 .map(|x| x.free_vars())
@@ -293,30 +293,30 @@ impl Term {
                     .map(|ty| Self::substitute_or(ty.clone(), name, replacement));
                 Some(Let(bind_name.clone(), annotation_new, rhs_new, body_new).into())
             }
-            Binder {
-                binder,
+            Arrow {
+                kind: binder,
                 param_name,
                 ty,
                 body,
             } if name == param_name => ty.substitute(name, replacement).map(|ty| {
-                Binder {
-                    binder: *binder,
+                Arrow {
+                    kind: *binder,
                     param_name: param_name.clone(),
                     ty,
                     body: body.clone(),
                 }
                 .into()
             }),
-            Binder {
-                binder,
+            Arrow {
+                kind: binder,
                 param_name,
                 ty,
                 body,
             } if replacement.free_vars().contains(param_name) => {
                 // Change the parameter name and recurse.
                 let new_param_name = make_name_unique(param_name);
-                let new_binder_term = Binder {
-                    binder: *binder,
+                let new_binder_term = Arrow {
+                    kind: *binder,
                     param_name: new_param_name.clone(),
                     ty: ty.clone(),
                     body: Self::substitute_or(
@@ -331,8 +331,8 @@ impl Term {
                     replacement,
                 ))
             }
-            Binder {
-                binder,
+            Arrow {
+                kind: binder,
                 param_name,
                 ty,
                 body,
@@ -342,8 +342,8 @@ impl Term {
             ) {
                 (None, None) => None,
                 (ty_new, body_new) => Some(
-                    Binder {
-                        binder: *binder,
+                    Arrow {
+                        kind: *binder,
                         param_name: param_name.clone(),
                         ty: ty_new.as_ref().unwrap_or(ty).clone(),
                         body: body_new.as_ref().unwrap_or(body).clone(),
@@ -364,7 +364,7 @@ impl Term {
                     .into(),
                 ),
             },
-            Prop | Type | Var(_) | StringLiteral(_) | Str | StringAppend => None,
+            Var(_) | Literal(_) => None,
         }
     }
 
@@ -420,7 +420,7 @@ impl Term {
                 let lhs = lhs_new.as_ref().unwrap_or(lhs);
                 let rhs = rhs_new.as_ref().unwrap_or(rhs);
 
-                if let Binder {
+                if let Arrow {
                     body, param_name, ..
                 } = lhs.as_ref()
                 {
@@ -431,10 +431,11 @@ impl Term {
                 }
 
                 if let Appl(func, arg1) = lhs.as_ref() {
-                    if let (StringAppend, StringLiteral(s1), StringLiteral(s2)) =
+                    use self::Literal as L;
+                    if let (Literal(L::StringAppend), Literal(L::String(s1)), Literal(L::String(s2))) =
                         (func.as_ref(), arg1.as_ref(), rhs.as_ref())
                     {
-                        return Some(StringLiteral(format!("{s1}{s2}")).into());
+                        return Some(Literal(L::String(format!("{s1}{s2}").into())).into());
                     }
                 }
 
@@ -444,8 +445,8 @@ impl Term {
 
                 Some(Appl(lhs.clone(), rhs.clone()).into())
             }
-            Binder {
-                binder,
+            Arrow {
+                kind: binder,
                 param_name,
                 ty,
                 body,
@@ -470,8 +471,8 @@ impl Term {
                 }
 
                 Some(
-                    Binder {
-                        binder: *binder,
+                    Arrow {
+                        kind: *binder,
                         param_name: param_name.clone(),
                         ty: ty.clone(),
                         body: body.clone(),
@@ -483,7 +484,7 @@ impl Term {
                 .pipe(Self::eval_or)
                 .pipe(Some),
             TypeAnnotation(term, _) => term.eval(),
-            Prop | Type | Var(_) | StringLiteral(_) | Str | StringAppend => None,
+            Literal(_) | Var(_) => None,
         }
     }
 
@@ -504,8 +505,8 @@ impl Term {
                     lhs.infer_type_with_ctx(variable_types),
                     rhs.infer_type_with_ctx(variable_types),
                 )?;
-                if let Binder {
-                    binder: BinderKind::Type,
+                if let Arrow {
+                    kind: ArrowKind::Type,
                     param_name,
                     ty,
                     body,
@@ -528,8 +529,8 @@ impl Term {
                     )])
                 }
             }
-            Binder {
-                binder: BinderKind::Value,
+            Arrow {
+                kind: ArrowKind::Value,
                 param_name,
                 ty,
                 body,
@@ -539,8 +540,8 @@ impl Term {
                     body.infer_type_with_ctx(variable_types)?
                 });
                 // The lambda's type is a pi type.
-                let lam_type = Binder {
-                    binder: BinderKind::Type,
+                let lam_type = Arrow {
+                    kind: ArrowKind::Type,
                     param_name: param_name.clone(),
                     ty: Rc::clone(ty),
                     body: body_type,
@@ -549,8 +550,8 @@ impl Term {
                 lam_type.infer_type_with_ctx(variable_types)?;
                 Ok(Self::eval_or(lam_type.into()))
             }
-            Binder {
-                binder: BinderKind::Type,
+            Arrow {
+                kind: ArrowKind::Type,
                 param_name,
                 ty,
                 body,
@@ -575,23 +576,7 @@ impl Term {
                     Ok(term_type)
                 }
             }
-            Prop => Ok(Type.into()),
-            Type => Ok(Type.into()),
-            StringLiteral(_) => Ok(Str.into()),
-            Str => Ok(Type.into()),
-            StringAppend => Ok(Binder {
-                binder: BinderKind::Type,
-                param_name: "s1".into(),
-                ty: Str.into(),
-                body: Binder {
-                    binder: BinderKind::Type,
-                    param_name: "s2".into(),
-                    ty: Str.into(),
-                    body: Str.into(),
-                }
-                .into(),
-            }
-            .into()),
+            Literal(l) => Self::literal_type(l).pipe(Ok),
             Let(name, annotation, rhs, body) => {
                 let rhs_type = rhs.infer_type_with_ctx(variable_types)?;
                 if let Some(annotation) = annotation {
@@ -608,6 +593,28 @@ impl Term {
         }
     }
 
+    pub fn literal_type(literal: &Literal) -> PTerm {
+        match literal {
+            Literal::Prop => Literal::Type.into(),
+            Literal::Type => Literal::Type.into(),
+            Literal::String(_) => Literal::Str.into(),
+            Literal::Str => Literal::Type.into(),
+            Literal::StringAppend => Term::Arrow {
+                kind: ArrowKind::Type,
+                param_name: "s1".into(),
+                ty: Literal::Str.into(),
+                body: Term::Arrow {
+                    kind: ArrowKind::Type,
+                    param_name: "s2".into(),
+                    ty: Literal::Str.into(),
+                    body: Literal::Str.into(),
+                }
+                .into(),
+            }
+            .into(),
+        }
+    }
+
     pub fn infer_type(&self) -> Result<PTerm, Vec<String>> {
         let mut variable_types = TypeContext::new();
         let res = self.infer_type_with_ctx(&mut variable_types);
@@ -615,50 +622,6 @@ impl Term {
         res
     }
 }
-
-/*
-(* A list of variable declarations for type inference. *)
-type context = (string * term) list
-
-(* Infers a type, in beta normal form, of a term in a given (well-formed)
-   context; throws an exception otherwise. *)
-let rec infer_type_with_ctx (ctx : context) (t : term) =
-  let infer = infer_type_with_ctx in
-  match t with
-  | Var x -> eval (List.assoc x ctx)
-  | Appl (m, n) -> (
-      match (infer ctx m, infer ctx n) with
-      | Binder (Pi, x, ty, m), arg_ty ->
-          if alpha_eq ty arg_ty then eval (subst m x n)
-          else
-            failwith
-              (Printf.sprintf
-                 "Argument type mismatch in %s: expected %s, found %s" (print t)
-                 (print ty) (print arg_ty))
-      | m_ty, n_ty ->
-          failwith
-            (Printf.sprintf
-               "Application of argument %s (type %s) to non-lambda %s (type %s)"
-               (print n) (print n_ty) (print m) (print m_ty)))
-  | Binder (Lam, x, ty, m) ->
-      let m_ty = infer ((x, ty) :: ctx) m in
-      let lam_ty = Binder (Pi, x, ty, m_ty) in
-      let _ = infer ctx lam_ty in
-      eval lam_ty
-  | Binder (Pi, x, ty, m) ->
-      let _s1 = infer ctx ty in
-      let s2 = infer ((x, ty) :: ctx) m in
-      s2
-  | Star -> Box
-  | Box -> failwith "☐ has no type"
-
-let infer_type t = infer_type_with_ctx [] t
-
-let type_check_with_ctx ctx t expected =
-  assert (alpha_eq (infer_type_with_ctx ctx t) (eval expected))
-
-let type_check t expected = type_check_with_ctx [] t expected
-*/
 
 /*
 fn generate_variable_name(variable_num: usize) -> String {
@@ -744,16 +707,16 @@ impl Display for Term {
                     write!(f, "{} {}", FmtParen(lhs), FmtParen(rhs))
                 }
             }
-            Binder {
-                binder: BinderKind::Type,
+            Arrow {
+                kind: ArrowKind::Type,
                 param_name,
                 ty,
                 body,
             } if body.free_vars().iter().all(|x| x != param_name) => {
                 write!(f, "{} -> {}", FmtParen(ty), body)
             }
-            Binder {
-                binder,
+            Arrow {
+                kind: binder,
                 param_name,
                 ty,
                 body,
@@ -761,20 +724,29 @@ impl Display for Term {
                 f,
                 "({param_name}: {ty}) {arrow} {body}",
                 arrow = match binder {
-                    BinderKind::Type => "->",
-                    BinderKind::Value => "=>",
+                    ArrowKind::Type => "->",
+                    ArrowKind::Value => "=>",
                 },
             ),
             TypeAnnotation(term, typ) => write!(f, "{term} : {typ}"),
-            Prop => write!(f, "prop"),
-            Type => write!(f, "type"),
-            StringLiteral(s) => write!(f, "\"{s}\""),
-            Str => write!(f, "str"),
-            StringAppend => write!(f, "<string-append>"),
+            Literal(literal) => write!(f, "{literal}"),
             Let(name, Some(annotation), rhs, body) => {
                 write!(f, "(let {name} : {annotation} = {rhs} in {body})",)
             }
             Let(name, None, rhs, body) => write!(f, "(let {name} = {rhs} in {body})",),
+        }
+    }
+}
+
+impl Display for Literal {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        use Literal::*;
+        match self {
+            Prop => write!(f, "prop"),
+            Type => write!(f, "type"),
+            String(s) => write!(f, "\"{s}\""),
+            Str => write!(f, "str"),
+            StringAppend => write!(f, "<string-append>"),
         }
     }
 }

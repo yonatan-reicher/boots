@@ -1,5 +1,5 @@
 use crate::ast::{ArrowType, Ast, Literal};
-use crate::core::{BinderKind, PTerm, Term};
+use crate::core::{ArrowKind, PTerm, Term, Literal as CoreLiteral};
 use crate::global::*;
 use crate::name::Name;
 
@@ -71,8 +71,8 @@ impl State {
                 };
                 let typ = self.ast_to_core(typ);
 
-                Term::Binder {
-                    binder: BinderKind::Value,
+                Term::Arrow {
+                    kind: ArrowKind::Value,
                     param_name,
                     ty: typ?,
                     body: right?,
@@ -89,8 +89,8 @@ impl State {
                 };
                 let typ = self.ast_to_core(typ);
 
-                Term::Binder {
-                    binder: BinderKind::Type,
+                Term::Arrow {
+                    kind: ArrowKind::Type,
                     param_name,
                     ty: typ?,
                     body: right?,
@@ -101,10 +101,7 @@ impl State {
                 let typ = self.ast_to_core(typ);
                 Term::TypeAnnotation(val?, typ?)
             }
-            Ast::Literal(Literal::String(s), _) => Term::StringLiteral(s.clone()),
-            Ast::Literal(Literal::Int(_), _) => todo!(),
-            Ast::Literal(Literal::Type, _) => Term::Type,
-            Ast::Literal(Literal::Prop, _) => Term::Prop,
+            Ast::Literal(literal, _) => self.literal_to_core(literal).pipe(Term::Literal),
             Ast::Let(bind, value, body) => {
                 let (name, typ) = destruct(get_name_lam(bind));
                 let typ = typ
@@ -125,6 +122,15 @@ impl State {
         }
         .pipe(PTerm::from)
         .pipe(Ok)
+    }
+
+    fn literal_to_core(&mut self, literal: &Literal) -> CoreLiteral {
+        match literal {
+            Literal::String(s) => CoreLiteral::String(s.clone()),
+            Literal::Int(_) => todo!(),
+            Literal::Type => CoreLiteral::Type,
+            Literal::Prop => CoreLiteral::Prop,
+        }
     }
 }
 

@@ -15,7 +15,7 @@ use cli::{parse_args, Action, Cli};
 use std::fs;
 use std::io::{self, Result as IORes};
 
-use crate::core::{BinderKind, PTerm, Term};
+use crate::core::{ArrowKind, PTerm, Term, Literal};
 
 mod repl {
     use super::*;
@@ -64,23 +64,23 @@ fn main() -> IORes<()> {
 
     engine.add_variable(
         "string-append".into(),
-        Term::Binder {
-            binder: BinderKind::Type,
+        Term::Arrow {
+            kind: ArrowKind::Type,
             param_name: "_".into(),
-            ty: Term::Str.into(),
-            body: Term::Binder {
-                binder: BinderKind::Type,
+            ty: Literal::Str.into(),
+            body: Term::Arrow {
+                kind: ArrowKind::Type,
                 param_name: "_".into(),
-                ty: Term::Str.into(),
-                body: Term::Str.into(),
+                ty: Literal::Str.into(),
+                body: Literal::Str.into(),
             }
             .into(),
         }
         .into(),
-        Term::StringAppend.into(),
+        Literal::StringAppend.into(),
     );
 
-    engine.add_variable("str".into(), Term::Type.into(), Term::Str.into());
+    engine.add_variable("str".into(), Literal::Type.into(), Literal::Str.into());
 
     match action {
         Action::Eval { filename: None } => {

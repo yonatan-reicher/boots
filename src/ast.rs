@@ -16,7 +16,7 @@ pub enum Ast {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Literal {
-    String(String),
+    String(Name),
     Int(i32),
     Prop,
     Type,

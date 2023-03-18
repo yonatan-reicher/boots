@@ -295,7 +295,7 @@ fn atom_after_linebreak(tokens: &mut TokenReader) -> Option<Ast> {
 
 fn literal(tokens: &mut TokenReader) -> Option<Literal> {
     if let Some(string) = tokens.pop_token_string() {
-        return Some(Literal::String(string.to_owned()));
+        return Some(Literal::String(Name::from_str(string)));
     }
 
     if let Some(int) = tokens.pop_token_int() {

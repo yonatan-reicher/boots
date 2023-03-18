@@ -1,6 +1,6 @@
 use crate::c;
 use crate::c::combine_traits::*;
-use crate::core::{BinderKind, PTerm, Term, TypeContext};
+use crate::core::{ArrowKind, PTerm, Term, TypeContext, Literal};
 use crate::global::*;
 use crate::name::Name;
 use std::collections::HashMap;
@@ -296,11 +296,11 @@ fn closure_drop_function(
 fn compile_clone(var_c_name: Name, var_n_type: &Term) -> (c::Block, Name) {
     (
         match var_n_type {
-            Term::Binder {
-                binder: BinderKind::Type,
+            Term::Arrow {
+                kind: ArrowKind::Type,
                 ..
             } => vec![var_c_name.clone().var().arrow("rc").inc().stmt()],
-            Term::Str => {
+            Term::Literal(Literal::Str) => {
                 vec!["cloneStr".var().call([var_c_name.clone().var()]).stmt()]
             }
             _ => vec![],
@@ -313,11 +313,11 @@ fn compile_drop(var_name: Name, var_type: &Term) -> c::Block {
     let var = var_name.var();
     let drop = var.clone().arrow("drop");
     match var_type {
-        Term::Binder {
-            binder: BinderKind::Type,
+        Term::Arrow {
+            kind: ArrowKind::Type,
             ..
         } => vec![drop.call([var]).stmt()],
-        Term::Str => vec!["dropStr".var().call([var]).stmt()],
+        Term::Literal(Literal::Str) => vec!["dropStr".var().call([var]).stmt()],
         _ => vec![],
     }
 }
@@ -471,8 +471,8 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
                 output_var_name,
             )
         }
-        Term::Binder {
-            binder: BinderKind::Value,
+        Term::Arrow {
+            kind: ArrowKind::Value,
             param_name,
             ty,
             body,
@@ -482,7 +482,7 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
 
             // Infer the type of the body and get a type expression for it.
             let body_type = match term_type.as_ref() {
-                Term::Binder { body, .. } => body,
+                Term::Arrow { body, .. } => body,
                 _ => unreachable!(),
             };
             let body_c_type: c::PTypeExpr = compile_type_expr(body_type, con).unwrap().into();
@@ -554,24 +554,8 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
             // Return a variable referencing the function.
             (vec![set_output], output_var_name)
         }
-        Term::Binder { binder: BinderKind::Type, .. } => panic!(),
-        Term::Prop => (vec![], "prop".into()),
-        Term::Type => (vec![], "type".into()),
-        Term::StringLiteral(string) => {
-            let name = con.name_gen.next(NameOptions::Var);
-            (
-                vec!["makeStr"
-                    .var()
-                    .call([string.clone().literal()])
-                    .variable(name.clone(), "str".type_var())],
-                name,
-            )
-        }
-        Term::StringAppend => (
-            vec!["appendStrClosure".var().arrow("rc").inc().stmt()],
-            "appendStrClosure".into(),
-        ),
-        Term::Str => todo!(),
+        Term::Arrow { kind: ArrowKind::Type, .. } => panic!(),
+        Term::Literal(literal) => compile_literal_expr(literal, con),
         Term::TypeAnnotation(x, _) => compile_expr(x.clone(), con),
         Term::Let(name, _, rhs, body) => {
             let (rhs_prelude, var_name) = compile_expr(rhs.clone(), con);
@@ -591,13 +575,35 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
     }
 }
 
+fn compile_literal_expr(literal: &Literal, con: &mut Context) -> (c::Block, Name) {
+    match literal {
+        Literal::Prop => (vec![], "prop".into()),
+        Literal::Type => (vec![], "type".into()),
+        Literal::String(string) => {
+            let name = con.name_gen.next(NameOptions::Var);
+            (
+                vec!["makeStr"
+                    .var()
+                    .call([string.clone().literal()])
+                    .variable(name.clone(), "str".type_var())],
+                name,
+            )
+        }
+        Literal::StringAppend => (
+            vec!["appendStrClosure".var().arrow("rc").inc().stmt()],
+            "appendStrClosure".into(),
+        ),
+        Literal::Str => todo!(),
+    }
+}
+
 fn compile_type_expr(term: &Term, con: &mut Context) -> Result<c::TypeExpr, ()> {
     let term = Term::eval_or(term.clone().into());
     match term.as_ref() {
-        Term::Prop => Ok(c::TypeExpr::Var("prop".into())),
-        Term::Type => Ok(c::TypeExpr::Var("type".into())),
-        Term::Binder {
-            binder: BinderKind::Type,
+        Term::Literal(Literal::Prop) => Ok(c::TypeExpr::Var("prop".into())),
+        Term::Literal(Literal::Type) => Ok(c::TypeExpr::Var("type".into())),
+        Term::Arrow {
+            kind: ArrowKind::Type,
             param_name: _,
             ty,
             body,
@@ -614,7 +620,7 @@ fn compile_type_expr(term: &Term, con: &mut Context) -> Result<c::TypeExpr, ()> 
                 });
             Ok(name.type_var().ptr())
         }
-        Term::Str => "str".type_var().pipe(Ok),
+        Term::Literal(Literal::Str) => "str".type_var().pipe(Ok),
         _ => Err(()),
     }
 }

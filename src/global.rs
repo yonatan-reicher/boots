@@ -22,16 +22,19 @@ macro_rules! with_variable {
 }
 pub(crate) use with_variable;
 
+#[inline]
 pub fn extend<T, I: IntoIterator<Item = T>>(mut left: Vec<T>, right: I) -> Vec<T> {
     left.extend(right);
     left
 }
 
 pub trait VecPipe<T>: Into<Vec<T>> {
+    #[inline]
     fn extend_pipe<I: IntoIterator<Item = T>>(self, right: I) -> Vec<T> {
         extend(self.into(), right)
     }
 
+    #[inline]
     fn extend_pipe_one(self, right: T) -> Vec<T> {
         let mut v = self.into();
         v.push(right);
@@ -42,6 +45,7 @@ pub trait VecPipe<T>: Into<Vec<T>> {
 impl<T, V> VecPipe<T> for V where V: Into<Vec<T>> {}
 
 pub trait Pipe<T, U>: Into<T> {
+    #[inline]
     fn pipe(self, f: impl FnOnce(T) -> U) -> U {
         f(self.into())
     }
@@ -68,6 +72,7 @@ pub fn collect_results<T, E>(results: impl IntoIterator<Item = Result<T, E>>) ->
     ret
 }
 
+#[inline]
 pub fn destruct<T, U, E: Copy>(result: Result<(T, U), E>) -> (Result<T, E>, Result<U, E>) {
     match result {
         Ok((t, u)) => (Ok(t), Ok(u)),
