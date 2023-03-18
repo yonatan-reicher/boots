@@ -1,3 +1,5 @@
+mod eval;
+
 use std::fmt::{self, Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
