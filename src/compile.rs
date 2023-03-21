@@ -1,6 +1,6 @@
 use crate::c;
 use crate::c::combine_traits::*;
-use crate::core::{ArrowKind, PTerm, Term, TypeContext, Literal};
+use crate::core::{normalize, ArrowKind, PTerm, Term, TypeContext, Literal};
 use crate::global::*;
 use crate::name::Name;
 use std::collections::HashMap;
@@ -345,8 +345,8 @@ fn compile_let(name: Name, term: PTerm, body: PTerm, context: &mut Context) -> (
 */
 
 fn function_c_type_declaration(
-    arg_type: &Term,
-    ret_type: &Term,
+    arg_type: &PTerm,
+    ret_type: &PTerm,
     name: Name,
     context: &mut Context,
 ) -> c::TopLevelDeclaration {
@@ -432,7 +432,7 @@ pub fn compile(term: PTerm) -> c::Program {
 // TODO: Add `compile_clone` calls where appropriate. Where should they be added?
 //       - When a name returned from a `compile_expr` call is used more than once.
 fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
-    let term = Term::eval_or(term);
+    let term = normalize(&term);
     let term_type = term.infer_type_with_ctx(&mut con.n_vars).unwrap();
     match term.as_ref() {
         Term::Var(name) => {
@@ -597,8 +597,8 @@ fn compile_literal_expr(literal: &Literal, con: &mut Context) -> (c::Block, Name
     }
 }
 
-fn compile_type_expr(term: &Term, con: &mut Context) -> Result<c::TypeExpr, ()> {
-    let term = Term::eval_or(term.clone().into());
+fn compile_type_expr(term: &PTerm, con: &mut Context) -> Result<c::TypeExpr, ()> {
+    let term = normalize(term);
     match term.as_ref() {
         Term::Literal(Literal::Prop) => Ok(c::TypeExpr::Var("prop".into())),
         Term::Literal(Literal::Type) => Ok(c::TypeExpr::Var("type".into())),
