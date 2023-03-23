@@ -1,4 +1,5 @@
 mod eval;
+mod typecheck;
 
 use std::fmt::{self, Display, Formatter};
 use std::hash::{Hash, Hasher};
@@ -8,6 +9,7 @@ use crate::global::*;
 use crate::name::Name;
 
 pub use eval::{eval, normalize, Context as EvalContext};
+pub use typecheck::{typecheck, Context as TypeContext};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ArrowKind {
@@ -16,8 +18,6 @@ pub enum ArrowKind {
 }
 
 pub type PTerm = Rc<Term>;
-
-pub type TypeContext = std::collections::HashMap<Name, PTerm>;
 
 // TODO: Is our PartialOrd valid? Because we have overriden partial eq.
 // Aternatively, do not implement PartialOrd and PartialEq at all.
