@@ -1,8 +1,8 @@
 use crate::c;
 use crate::c::combine_traits::*;
-use crate::core::{normalize, ArrowKind, PTerm, Term, TypeContext, Literal};
 use crate::global::*;
 use crate::name::Name;
+use crate::term::{infer, normalize, ArrowKind, Literal, PTerm, Term, TypeContext};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -372,7 +372,7 @@ fn function_c_type_declaration(
 }
 
 pub fn compile(term: PTerm) -> c::Program {
-    let term_type = term.infer_type().expect("Still no error handling...");
+    let term_type = infer(&term, &mut Default::default()).expect("Still no error handling...");
 
     let mut context = Context::default();
 
@@ -433,7 +433,7 @@ pub fn compile(term: PTerm) -> c::Program {
 //       - When a name returned from a `compile_expr` call is used more than once.
 fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
     let term = normalize(&term);
-    let term_type = term.infer_type_with_ctx(&mut con.n_vars).unwrap();
+    let term_type = infer(&term, &mut con.n_vars).unwrap();
     match term.as_ref() {
         Term::Var(name) => {
             let (_, var_c_name) = con.c_vars[name].clone();
@@ -445,7 +445,7 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
         // then pass it to it's .call field along with the argument (rhs!).
         {
             let (func_perlude, func_var_name) = compile_expr(func.clone(), con);
-            let func_type = func.infer_type_with_ctx(&mut con.n_vars).unwrap();
+            let func_type = infer(&func, &mut con.n_vars).unwrap();
             let (arg_prelude, arg_var_name) = compile_expr(arg.clone(), con);
 
             // Call the function object with the argument.
@@ -478,7 +478,7 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
             body,
         } => {
             // Get a type expression for the parameter's type.
-            let param_c_ty: c::PTypeExpr = compile_type_expr(ty, con).unwrap().into();
+            let param_c_ty: c::PTypeExpr = compile_type_expr(&ty, con).unwrap().into();
 
             // Infer the type of the body and get a type expression for it.
             let body_type = match term_type.as_ref() {
@@ -554,13 +554,16 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
             // Return a variable referencing the function.
             (vec![set_output], output_var_name)
         }
-        Term::Arrow { kind: ArrowKind::Type, .. } => panic!(),
-        Term::Literal(literal) => compile_literal_expr(literal, con),
+        Term::Arrow {
+            kind: ArrowKind::Type,
+            ..
+        } => panic!(),
+        Term::Literal(literal) => compile_literal_expr(&literal, con),
         Term::TypeAnnotation(x, _) => compile_expr(x.clone(), con),
         Term::Let(name, _, rhs, body) => {
             let (rhs_prelude, var_name) = compile_expr(rhs.clone(), con);
 
-            let typ = rhs.infer_type_with_ctx(&mut con.n_vars).unwrap();
+            let typ = infer(&rhs, &mut con.n_vars).unwrap();
 
             let (body_prelude, body_ret_name) = with_variable!(con.n_vars, (name, typ.clone()), {
                 compile_expr(body.clone(), con)

@@ -3,7 +3,7 @@ mod ast_to_core;
 mod c;
 mod cli;
 mod compile;
-mod core;
+mod term;
 mod engine;
 mod global;
 mod lex;
@@ -15,7 +15,7 @@ use cli::{parse_args, Action, Cli};
 use std::fs;
 use std::io::{self, Result as IORes};
 
-use crate::core::{ArrowKind, PTerm, Term, Literal};
+use crate::term::{ArrowKind, PTerm, Term, Literal};
 
 mod repl {
     use super::*;

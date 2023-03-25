@@ -5,7 +5,7 @@ use std::cell::RefCell;
 
 use crate::c::Program as CProgram;
 use crate::compile::compile;
-use crate::core::{eval, EvalContext, PTerm, Term, TypeContext};
+use crate::term::{eval, infer, EvalContext, PTerm, Term, TypeContext, TypeError};
 use crate::name::Name;
 
 #[derive(Debug, Clone, Default)]
@@ -30,12 +30,12 @@ impl Engine {
         self.eval_context.get_mut().remove(name);
     }
 
-    pub fn infer_type(&self, mut term: PTerm) -> Result<PTerm, Vec<String>> {
+    pub fn infer_type(&self, mut term: PTerm) -> Result<PTerm, Vec<TypeError>> {
         // Put the values in the term.
         for (name, value) in self.eval_context.borrow().iter() {
             term = Term::substitute_or(term, name, value.clone());
         }
-        term.infer_type_with_ctx(&mut self.type_context.borrow_mut())
+        infer(&term, &mut self.type_context.borrow_mut())
     }
 
     pub fn eval(&self, mut term: PTerm) -> PTerm {

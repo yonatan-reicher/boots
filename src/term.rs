@@ -1,5 +1,5 @@
 mod eval;
-mod typecheck;
+mod infer;
 
 use std::fmt::{self, Display, Formatter};
 use std::hash::{Hash, Hasher};
@@ -9,7 +9,7 @@ use crate::global::*;
 use crate::name::Name;
 
 pub use eval::{eval, normalize, Context as EvalContext};
-pub use typecheck::{typecheck, Context as TypeContext};
+pub use infer::{infer, Context as TypeContext, Error as TypeError};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ArrowKind {
@@ -58,18 +58,6 @@ impl From<Literal> for Term {
 impl From<Literal> for PTerm {
     fn from(literal: Literal) -> Self {
         Rc::new(literal.into())
-    }
-}
-
-fn result_combine<T, U, E>(
-    left: Result<T, Vec<E>>,
-    right: Result<U, Vec<E>>,
-) -> Result<(T, U), Vec<E>> {
-    match (left, right) {
-        (Ok(l), Ok(r)) => Ok((l, r)),
-        (Err(l), Err(r)) => Err(extend(l, r)),
-        (Err(l), _) => Err(l),
-        (_, Err(r)) => Err(r),
     }
 }
 
@@ -410,140 +398,6 @@ impl Term {
         self.eval_with_stack(&mut stack)
     }
     */
-
-    pub fn infer_type_with_ctx(
-        &self,
-        variable_types: &mut TypeContext,
-    ) -> Result<PTerm, Vec<String>> {
-        use Term::*;
-        match self {
-            Var(var) => variable_types.get(var.as_ref()).cloned().ok_or_else(|| {
-                vec![format!(
-                    "You refered to a variable '{var}' which does not exist \
-                    in this context!",
-                )]
-            }),
-            Appl(lhs, rhs) => {
-                let (lhs_type, rhs_type) = result_combine(
-                    lhs.infer_type_with_ctx(variable_types),
-                    rhs.infer_type_with_ctx(variable_types),
-                )?;
-                if let Arrow {
-                    kind: ArrowKind::Type,
-                    param_name,
-                    ty,
-                    body,
-                } = lhs_type.as_ref()
-                {
-                    // Check the type of the argument matches the type of the
-                    // parameter.
-                    if ty != &rhs_type {
-                        return Err(vec![format!(
-                            "Argument type mismatch in {self}: \
-                             expected {ty}, found {rhs_type}",
-                        )]);
-                    }
-
-                    Ok(Self::substitute_or(body.clone(), param_name, rhs_type))
-                } else {
-                    Err(vec![format!(
-                        "Application of argument {rhs} (type {rhs_type}) \
-                         to non-lambda {lhs} (type {lhs_type})",
-                    )])
-                }
-            }
-            Arrow {
-                kind: ArrowKind::Value,
-                param_name,
-                ty,
-                body,
-            } => {
-                // Get the type of the body.
-                let body_type = with_variable!(variable_types, (param_name, Rc::clone(ty)), {
-                    body.infer_type_with_ctx(variable_types)?
-                });
-                // The lambda's type is a pi type.
-                let lam_type = Arrow {
-                    kind: ArrowKind::Type,
-                    param_name: param_name.clone(),
-                    ty: Rc::clone(ty),
-                    body: body_type,
-                };
-                // Make sure this binder type checks.
-                lam_type.infer_type_with_ctx(variable_types)?;
-                Ok(normalize(&lam_type.into()))
-            }
-            Arrow {
-                kind: ArrowKind::Type,
-                param_name,
-                ty,
-                body,
-            } => {
-                // Check that `ty`'s type could be infered.
-                ty.infer_type_with_ctx(variable_types)?;
-                // Get the type of the body.
-                let body_type = with_variable!(variable_types, (param_name, ty.clone()), {
-                    body.infer_type_with_ctx(variable_types)?
-                });
-                // The pi binder's type is the type of the body.
-                Ok(body_type)
-            }
-            TypeAnnotation(term, typ) => {
-                // Check that the type of term matches the type annotation.
-                let term_type = term.infer_type_with_ctx(variable_types)?;
-                if term_type != *typ {
-                    Err(vec![format!(
-                        "Type annotation mismatch: {term_type} != {typ}",
-                    )])
-                } else {
-                    Ok(term_type)
-                }
-            }
-            Literal(l) => Self::literal_type(l).pipe(Ok),
-            Let(name, annotation, rhs, body) => {
-                let rhs_type = rhs.infer_type_with_ctx(variable_types)?;
-                if let Some(annotation) = annotation {
-                    if rhs_type != *annotation {
-                        return Err(vec![format!(
-                            "Type annotation mismatch: {rhs_type} != {annotation}",
-                        )]);
-                    }
-                }
-                with_variable!(variable_types, (name, rhs_type), {
-                    body.infer_type_with_ctx(variable_types)
-                })
-            } // Type => Err(vec![format!("Type's type cannot be inferred")]),
-        }
-    }
-
-    pub fn literal_type(literal: &Literal) -> PTerm {
-        match literal {
-            Literal::Prop => Literal::Type.into(),
-            Literal::Type => Literal::Type.into(),
-            Literal::String(_) => Literal::Str.into(),
-            Literal::Str => Literal::Type.into(),
-            Literal::StringAppend => Term::Arrow {
-                kind: ArrowKind::Type,
-                param_name: "s1".into(),
-                ty: Literal::Str.into(),
-                body: Term::Arrow {
-                    kind: ArrowKind::Type,
-                    param_name: "s2".into(),
-                    ty: Literal::Str.into(),
-                    body: Literal::Str.into(),
-                }
-                .into(),
-            }
-            .into(),
-        }
-    }
-
-    pub fn infer_type(&self) -> Result<PTerm, Vec<String>> {
-        let mut variable_types = TypeContext::new();
-        let res = self.infer_type_with_ctx(&mut variable_types);
-        assert!(variable_types.is_empty());
-        res
-    }
 }
 
 /*

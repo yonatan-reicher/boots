@@ -1,5 +1,5 @@
 use crate::ast::{ArrowType, Ast, Literal};
-use crate::core::{ArrowKind, PTerm, Term, Literal as CoreLiteral};
+use crate::term::{ArrowKind, PTerm, Term, Literal as CoreLiteral};
 use crate::global::*;
 use crate::name::Name;
 
