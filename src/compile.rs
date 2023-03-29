@@ -445,7 +445,7 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
         // then pass it to it's .call field along with the argument (rhs!).
         {
             let (func_perlude, func_var_name) = compile_expr(func.clone(), con);
-            let func_type = infer(&func, &mut con.n_vars).unwrap();
+            let func_type = infer(func, &mut con.n_vars).unwrap();
             let (arg_prelude, arg_var_name) = compile_expr(arg.clone(), con);
 
             // Call the function object with the argument.
@@ -478,7 +478,7 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
             body,
         } => {
             // Get a type expression for the parameter's type.
-            let param_c_ty: c::PTypeExpr = compile_type_expr(&ty, con).unwrap().into();
+            let param_c_ty: c::PTypeExpr = compile_type_expr(ty, con).unwrap().into();
 
             // Infer the type of the body and get a type expression for it.
             let body_type = match term_type.as_ref() {
@@ -558,12 +558,12 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
             kind: ArrowKind::Type,
             ..
         } => panic!(),
-        Term::Literal(literal) => compile_literal_expr(&literal, con),
+        Term::Literal(literal) => compile_literal_expr(literal, con),
         Term::TypeAnnotation(x, _) => compile_expr(x.clone(), con),
         Term::Let(name, _, rhs, body) => {
             let (rhs_prelude, var_name) = compile_expr(rhs.clone(), con);
 
-            let typ = infer(&rhs, &mut con.n_vars).unwrap();
+            let typ = infer(rhs, &mut con.n_vars).unwrap();
 
             let (body_prelude, body_ret_name) = with_variable!(con.n_vars, (name, typ.clone()), {
                 compile_expr(body.clone(), con)

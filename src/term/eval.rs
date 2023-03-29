@@ -18,13 +18,13 @@ pub fn name_is_bound(name: &Name, vars: &Context) -> bool {
             return true;
         }
     }
-    return false;
+    false
 }
 
 pub fn make_name_unique(name: &Name, vars: &Context) -> Name {
     let mut name = name.clone();
     while vars.contains_key(&name) || name_is_bound(&name, vars) {
-        name = format!("{}_", name).into();
+        name = format!("{name}_").into();
     }
     name
 }
@@ -54,7 +54,7 @@ pub fn substitute(term: &PTerm, to_substitute: &Name, replacement: &PTerm) -> PT
         .into(),
         Term::Let(name, annotation, rhs, body) => Term::Let(
             name.clone(),
-            annotation.as_ref().map(|annotation| recurse(annotation)),
+            annotation.as_ref().map(recurse),
             recurse(rhs),
             recurse(body),
         )
