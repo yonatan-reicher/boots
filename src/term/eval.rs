@@ -1,7 +1,8 @@
-use crate::term::{PTerm, Term};
 use crate::global::with_variable;
 use crate::name::Name;
+use crate::term::{PTerm, Term};
 use std::collections::HashMap;
+use std::rc::Rc;
 
 pub type Context = HashMap<Name, PTerm>;
 
@@ -10,9 +11,92 @@ pub fn normalize(term: &PTerm) -> PTerm {
     eval(term, &mut Context::default())
 }
 
+/// Check if the given name is a free variable in a bound variable.
+pub fn name_is_bound(name: &Name, vars: &Context) -> bool {
+    for value in vars.values() {
+        if value.free_vars().contains(name) {
+            return true;
+        }
+    }
+    return false;
+}
+
+pub fn make_name_unique(name: &Name, vars: &Context) -> Name {
+    let mut name = name.clone();
+    while vars.contains_key(&name) || name_is_bound(&name, vars) {
+        name = format!("{}_", name).into();
+    }
+    name
+}
+
+pub fn substitute(term: &PTerm, to_substitute: &Name, replacement: &PTerm) -> PTerm {
+    let recurse = |x| substitute(x, to_substitute, replacement);
+
+    match term.as_ref() {
+        // Replace name.
+        Term::Var(name) if name == to_substitute => replacement.clone(),
+        // Things that don't change.
+        Term::Var(_) | Term::Literal(_) => term.clone(),
+        Term::Arrow { param_name, .. } if param_name == to_substitute => term.clone(),
+        Term::Let(name, _, _, _) if name == to_substitute => term.clone(),
+        // Recurse.
+        Term::Arrow {
+            kind,
+            param_name,
+            ty,
+            body,
+        } => Term::Arrow {
+            kind: *kind,
+            param_name: param_name.clone(),
+            ty: recurse(ty),
+            body: recurse(body),
+        }
+        .into(),
+        Term::Let(name, annotation, rhs, body) => Term::Let(
+            name.clone(),
+            annotation.as_ref().map(|annotation| recurse(annotation)),
+            recurse(rhs),
+            recurse(body),
+        )
+        .into(),
+        Term::Appl(left, right) => Term::Appl(recurse(left), recurse(right)).into(),
+        Term::TypeAnnotation(left, right) => {
+            Term::TypeAnnotation(recurse(left), recurse(right)).into()
+        }
+    }
+}
+
 pub fn eval(term: &PTerm, vars: &mut Context) -> PTerm {
     use Term::*;
     match term.as_ref() {
+        // Bound name bug:
+        // We don't want (y => x => y) x to reduce to (x => x), but to
+        // something along the lines of (z => x)
+        Arrow {
+            kind,
+            param_name,
+            ty,
+            body,
+        } if name_is_bound(param_name, vars) => {
+            let new_param_name = make_name_unique(param_name, vars);
+            let new_body = substitute(body, param_name, &Term::Var(new_param_name.clone()).into());
+
+            let new_term = Rc::new(Arrow {
+                kind: *kind,
+                param_name: new_param_name,
+                ty: ty.clone(),
+                body: new_body,
+            });
+
+            eval(&new_term, vars)
+        }
+        Let(name, annotation, rhs, body) if name_is_bound(name, vars) => {
+            let new_name = make_name_unique(name, vars);
+            let new_body = substitute(body, name, &Term::Var(new_name.clone()).into());
+
+            let new_term = Let(new_name, annotation.clone(), rhs.clone(), new_body).into();
+            eval(&new_term, vars)
+        }
         Var(var) => vars.get(var).cloned().unwrap_or(term.clone()),
         Appl(lhs, rhs) => {
             let lhs = eval(lhs, vars);
@@ -67,9 +151,7 @@ pub fn eval(term: &PTerm, vars: &mut Context) -> PTerm {
         Let(name, _, rhs, body) => {
             let rhs = eval(rhs, vars);
 
-            with_variable!(vars, (name, rhs), {
-                eval(body, vars)
-            })
+            with_variable!(vars, (name, rhs), { eval(body, vars) })
         }
         TypeAnnotation(term, _) => eval(term, vars),
         Literal(_) => term.clone(),
