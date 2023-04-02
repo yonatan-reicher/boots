@@ -1,5 +1,5 @@
 use crate::ast::{ArrowType, Ast, Literal};
-use crate::lex::{lex, LToken, NewLine, Symbol, Token, Keyword};
+use crate::lex::{lex, Keyword, LToken, NewLine, Symbol, Token};
 use crate::located::{Pos, Range};
 use crate::name::Name;
 
@@ -129,7 +129,7 @@ impl<'source> TokenReader<'source> {
             .pop_token_newline()
             .map(|newline| match newline {
                 NewLine::NewLine { indent } => predicate(indent, start_indent),
-                NewLine::EmptyLine => self.pop_indent_in(),
+                NewLine::EmptyLine => self.pop_indent_helper(predicate),
             })
             .unwrap_or(false);
         if !ret {
@@ -206,10 +206,10 @@ fn term(tokens: &mut TokenReader) -> Ast {
     }
 
     // Then, parse a list of more atoms!
-    let second_atom = atom_after_linebreak(tokens);
+    let second_atom = atom(tokens);
     let mut rest_of_applications = vec![];
     if second_atom.is_some() {
-        while let Some(next_atom) = atom_after_linebreak(tokens) {
+        while let Some(next_atom) = atom(tokens) {
             rest_of_applications.push(next_atom);
         }
     }
@@ -219,6 +219,19 @@ fn term(tokens: &mut TokenReader) -> Ast {
         Some(second_atom) => Ast::Appl(first_atom.into(), second_atom.into(), rest_of_applications),
         None => first_atom,
     };
+
+    // Is this an indented application expression?
+    if tokens.pop_indent_in() {
+        let start_indent = tokens.indent;
+        let mut rest_of_applications = Vec::new();
+        let first_argument = term(tokens);
+        while tokens.pop_indent_same(start_indent) {
+            let next_argument = term(tokens);
+            rest_of_applications.push(next_argument);
+        }
+
+        return Ast::Appl(application_term.into(), first_argument.into(), rest_of_applications);
+    }
 
     // Is this a assign expression?
     if tokens.pop_token_eq(Symbol::Equal) {
@@ -252,7 +265,7 @@ fn atom(tokens: &mut TokenReader) -> Option<Ast> {
 
         // skip more linebreaks.
         tokens.pop_indent();
-        
+
         if !tokens.pop_token_eq(Symbol::CloseParen) {
             let expected_close = tokens.get_range(tokens.index).0;
             // Try to find where the parenthesis is closed.
@@ -277,20 +290,6 @@ fn atom(tokens: &mut TokenReader) -> Option<Ast> {
     }
 
     None
-}
-
-fn atom_after_linebreak(tokens: &mut TokenReader) -> Option<Ast> {
-    let initial_state = tokens.clone();
-
-    tokens.pop_indent_same(tokens.indent);
-    let atom = atom(tokens);
-
-    // If parsing the atom failed, we go back to the initial state.
-    if atom.is_none() {
-        *tokens = initial_state;
-    }
-
-    atom
 }
 
 fn literal(tokens: &mut TokenReader) -> Option<Literal> {

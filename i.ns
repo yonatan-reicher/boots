@@ -1,0 +1,4 @@
+f = ( (a : type) => (x : a) => x )
+x1 = f str
+x2 = f prop
+prop

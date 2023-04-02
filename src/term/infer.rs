@@ -1,6 +1,6 @@
 use std::collections::HashMap;
 
-use crate::term::{normalize, ArrowKind, Literal, PTerm, Term};
+use super::{normalize, substitute, ArrowKind, Literal, PTerm, Term};
 use crate::global::{with_variable, Pipe};
 use crate::name::Name;
 
@@ -66,8 +66,8 @@ impl<'a> State<'a> {
                 if param_ty != &rhs_type {
                     self.errors.push(Error::ArgumentTypeDoesntMatch);
                 }
-
-                Ok(Term::substitute_or(body.clone(), param_name, rhs_type))
+                
+                Ok(substitute(body, param_name, rhs))
             }
             Term::Arrow {
                 kind: ArrowKind::Value,
