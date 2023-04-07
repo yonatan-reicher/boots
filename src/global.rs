@@ -23,26 +23,24 @@ macro_rules! with_variable {
 pub(crate) use with_variable;
 
 #[inline]
-pub fn extend<T, I: IntoIterator<Item = T>>(mut left: Vec<T>, right: I) -> Vec<T> {
+pub fn extend<T, E: Extend<T>, I: IntoIterator<Item = T>>(mut left: E, right: I) -> E {
     left.extend(right);
     left
 }
 
-pub trait VecPipe<T>: Into<Vec<T>> {
+pub trait ExtendPipe<T, E: Extend<T>>: Into<E> {
     #[inline]
-    fn extend_pipe<I: IntoIterator<Item = T>>(self, right: I) -> Vec<T> {
+    fn extend_pipe<I: IntoIterator<Item = T>>(self, right: I) -> E {
         extend(self.into(), right)
     }
 
     #[inline]
-    fn extend_pipe_one(self, right: T) -> Vec<T> {
-        let mut v = self.into();
-        v.push(right);
-        v
+    fn extend_pipe_one(self, right: T) -> E {
+        self.extend_pipe(Some(right))
     }
 }
 
-impl<T, V> VecPipe<T> for V where V: Into<Vec<T>> {}
+impl<T, E: Extend<T>> ExtendPipe<T, E> for E {}
 
 pub trait Pipe<T, U>: Into<T> {
     #[inline]

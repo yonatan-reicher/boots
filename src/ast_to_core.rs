@@ -1,7 +1,7 @@
-use crate::ast::{ArrowType, Ast, Literal};
-use crate::term::{ArrowKind, PTerm, Term, Literal as CoreLiteral};
+use crate::ast::{ArrowKind as AstArrowKind, Ast, Literal};
 use crate::global::*;
 use crate::name::Name;
+use crate::term::{ArrowKind, Literal as CoreLiteral, PTerm, Term};
 
 #[derive(Clone, Debug)]
 pub enum Error {
@@ -39,9 +39,13 @@ impl State {
         Self { errors: vec![] }
     }
 
+    fn ast_slice_to_core(&mut self, asts: &[Ast]) -> Result<Vec<PTerm>, ()> {
+        asts.iter().map(|x| self.ast_to_core(x)).collect()
+    }
+
     pub fn ast_to_core(&mut self, ast: &Ast) -> Result<PTerm, ()> {
         match ast {
-            Ast::Var(name, _) => Term::Var(name.clone()),
+            Ast::Var(name, _) => Term::Var(name.clone()).into(),
             Ast::Appl(func, arg1, args_rest) => {
                 // Visit the function and all the arguments.
                 let func = self.ast_to_core(func);
@@ -54,13 +58,11 @@ impl State {
                 if let (Ok(func), Ok(args)) = (func, args) {
                     args.into_iter()
                         .fold(func, |func, arg| Term::Appl(func, arg).into())
-                        .as_ref()
-                        .clone()
                 } else {
                     return Err(());
                 }
             }
-            Ast::Arrow(ArrowType::Value, bind, right) => {
+            Ast::Arrow(AstArrowKind::Value, bind, right) => {
                 let right = self.ast_to_core(right);
                 let (param_name, typ) = match get_name_lam(bind) {
                     Ok((param_name, Some(typ))) => (param_name, typ),
@@ -76,9 +78,9 @@ impl State {
                     param_name,
                     ty: typ?,
                     body: right?,
-                }
+                }.into()
             }
-            Ast::Arrow(ArrowType::Type, bind, right) => {
+            Ast::Arrow(AstArrowKind::Type, bind, right) => {
                 let right = self.ast_to_core(right);
                 let (param_name, typ) = match get_name_pi(bind) {
                     Ok((param, typ)) => (param.unwrap_or("_".into()), typ),
@@ -94,14 +96,14 @@ impl State {
                     param_name,
                     ty: typ?,
                     body: right?,
-                }
+                }.into()
             }
             Ast::TypeAnnotation(val, typ) => {
                 let val = self.ast_to_core(val);
                 let typ = self.ast_to_core(typ);
-                Term::TypeAnnotation(val?, typ?)
+                Term::TypeAnnotation(val?, typ?).into()
             }
-            Ast::Literal(literal, _) => self.literal_to_core(literal).pipe(Term::Literal),
+            Ast::Literal(literal, _) => self.literal_to_core(literal).pipe(Term::Literal).into(),
             Ast::Let(bind, value, body) => {
                 let (name, typ) = destruct(get_name_lam(bind));
                 let typ = typ
@@ -111,16 +113,12 @@ impl State {
                     .transpose();
                 let value = self.ast_to_core(value);
                 let body = self.ast_to_core(body);
-                Term::Let(
-                    name?,
-                    typ?,
-                    value?,
-                    body?,
-                )
+                Term::Let(name?, typ?, value?, body?).into()
             }
+            Ast::Tuple(terms) => Term::Tuple(self.ast_slice_to_core(terms)?).into(),
+            Ast::TupleType(terms) => Term::TupleType(self.ast_slice_to_core(terms)?).into(),
             Ast::Error => todo!(),
         }
-        .pipe(PTerm::from)
         .pipe(Ok)
     }
 

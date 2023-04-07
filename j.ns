@@ -1,0 +1,2 @@
+f = (x: {str, str, str}) => x
+f ("a", "b", "c")

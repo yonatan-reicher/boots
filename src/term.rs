@@ -1,6 +1,7 @@
 mod eval;
 mod infer;
 
+use std::collections::HashSet;
 use std::fmt::{self, Display, Formatter};
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
@@ -19,13 +20,19 @@ pub enum ArrowKind {
 
 pub type PTerm = Rc<Term>;
 
+#[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Pattern {
+    Var(Name),
+    UnTuple(Vec<Pattern>),
+}
+
 // TODO: Is our PartialOrd valid? Because we have overriden partial eq.
 // Aternatively, do not implement PartialOrd and PartialEq at all.
 /**
  * The syntax of our calculus. Notice that types are represented in the same way
  * as terms, which is the essence of CoC.
  */
-#[derive(Debug, Clone, PartialOrd, Ord)]
+#[derive(Debug, PartialOrd, Ord)]
 pub enum Term {
     Appl(PTerm, PTerm),
     Arrow {
@@ -38,6 +45,9 @@ pub enum Term {
     TypeAnnotation(PTerm, PTerm),
     Var(Name),
     Let(Name, Option<PTerm>, PTerm, PTerm),
+    Tuple(Vec<PTerm>),
+    TupleType(Vec<PTerm>),
+    Match(PTerm, Vec<(Rc<Pattern>, PTerm)>),
 }
 
 #[derive(Debug, Clone, Hash, PartialEq, Eq, PartialOrd, Ord)]
@@ -101,6 +111,12 @@ impl PartialEq for Term {
                 term1 == term2 && type1 == type2
             }
             (TypeAnnotation(_, _), _) => false,
+            (Tuple(elements1), Tuple(elements2)) => elements1 == elements2,
+            (Tuple(_), _) => false,
+            (TupleType(elements1), TupleType(elements2)) => elements1 == elements2,
+            (TupleType(_), _) => false,
+            (Match(term1, cases1), Match(term2, cases2)) => term1 == term2 && cases1 == cases2,
+            (Match(_, _), _) => false,
         }
     }
 }
@@ -136,20 +152,46 @@ impl Hash for Term {
                 rhs.hash(state);
                 body.hash(state);
             }
+            Term::Tuple(elements) => {
+                for element in elements {
+                    element.hash(state);
+                }
+            }
+            Term::TupleType(elements) => {
+                for element in elements {
+                    element.hash(state);
+                }
+            }
+            Term::Match(inner, cases) => {
+                inner.hash(state);
+                cases.hash(state);
+            }
+        }
+    }
+}
+
+impl Pattern {
+    pub fn free_vars(&self) -> HashSet<Name> {
+        match self {
+            Pattern::Var(name) => [name.clone()].into(),
+            Pattern::UnTuple(patterns) => patterns.iter().flat_map(|p| p.free_vars()).collect(),
         }
     }
 }
 
 impl Term {
     pub fn is_atom(&self) -> bool {
-        matches!(self, Term::Literal(_) | Term::Var(_))
+        matches!(
+            self,
+            Term::Literal(_) | Term::Var(_) | Term::Tuple(_) | Term::TupleType(_)
+        )
     }
 
-    pub fn free_vars(&self) -> Vec<Name> {
+    pub fn free_vars(&self) -> HashSet<Name> {
         use Term::*;
         match self {
-            Var(var) => vec![var.clone()],
-            Appl(lhs, rhs) => extend(lhs.free_vars(), rhs.free_vars()),
+            Var(var) => [var.clone()].into(),
+            Appl(lhs, rhs) => lhs.free_vars().extend_pipe(rhs.free_vars()),
             Arrow {
                 param_name: name,
                 ty,
@@ -162,7 +204,7 @@ impl Term {
                     .filter(|var_ident| var_ident != name),
             ),
             TypeAnnotation(term, ty) => extend(term.free_vars(), ty.free_vars()),
-            Literal(_) => vec![],
+            Literal(_) => HashSet::new(),
             Let(name, annotation, rhs, body) => annotation
                 .as_ref()
                 .map(|x| x.free_vars())
@@ -173,6 +215,13 @@ impl Term {
                         .into_iter()
                         .filter(|var_ident| var_ident != name),
                 ),
+            Tuple(vec) => vec.iter().flat_map(|x| x.free_vars()).collect(),
+            TupleType(vec) => vec.iter().flat_map(|x| x.free_vars()).collect(),
+            Match(inner, cases) => inner.free_vars().extend_pipe(
+                cases
+                    .iter()
+                    .flat_map(|(pat, case)| &case.free_vars() - &pat.free_vars()),
+            ),
         }
     }
 }
@@ -225,6 +274,26 @@ impl<'a> Display for TermPrint<'a> {
     }
 }
 */
+
+fn fmt_tuple(f: &mut Formatter, terms: &[impl Display], start: char, end: char) -> fmt::Result {
+    write!(f, "{start}")?;
+    for (i, term) in terms.iter().enumerate() {
+        if i > 0 {
+            write!(f, ", ")?;
+        }
+        write!(f, "{term}")?;
+    }
+    write!(f, "{end}")
+}
+
+impl Display for Pattern {
+    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
+        match self {
+            Pattern::Var(var) => write!(f, "{}", var),
+            Pattern::UnTuple(terms) => fmt_tuple(f, terms, '(', ')'),
+        }
+    }
+}
 
 impl Display for Term {
     /*
@@ -285,9 +354,18 @@ impl Display for Term {
             TypeAnnotation(term, typ) => write!(f, "{term} : {typ}"),
             Literal(literal) => write!(f, "{literal}"),
             Let(name, Some(annotation), rhs, body) => {
-                write!(f, "(let {name} : {annotation} = {rhs} in {body})",)
+                write!(f, "let {name} : {annotation} = {rhs} in {body}",)
             }
-            Let(name, None, rhs, body) => write!(f, "(let {name} = {rhs} in {body})",),
+            Let(name, None, rhs, body) => write!(f, "let {name} = {rhs} in {body}",),
+            Tuple(vec) => fmt_tuple(f, vec, '(', ')'),
+            TupleType(vec) => fmt_tuple(f, vec, '{', '}'),
+            Match(term, cases) => {
+                write!(f, "match {term} with")?;
+                for (pattern, body) in cases {
+                    write!(f, "{pattern} => {body}",)?;
+                }
+                Ok(())
+            }
         }
     }
 }

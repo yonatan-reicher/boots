@@ -1,6 +1,6 @@
-use crate::global::with_variable;
+use crate::global::{with_variable, Pipe};
 use crate::name::Name;
-use crate::term::{PTerm, Term};
+use crate::term::{PTerm, Pattern, Term};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -27,6 +27,19 @@ pub fn make_name_unique(name: &Name, vars: &Context) -> Name {
         name = format!("{name}_").into();
     }
     name
+}
+
+fn substitute_case(
+    pattern: &Pattern,
+    case: &PTerm,
+    to_substitute: &Name,
+    replacement: &PTerm,
+) -> PTerm {
+    if pattern.free_vars().contains(to_substitute) {
+        case.clone()
+    } else {
+        substitute(case, to_substitute, replacement)
+    }
 }
 
 pub fn substitute(term: &PTerm, to_substitute: &Name, replacement: &PTerm) -> PTerm {
@@ -63,6 +76,39 @@ pub fn substitute(term: &PTerm, to_substitute: &Name, replacement: &PTerm) -> PT
         Term::TypeAnnotation(left, right) => {
             Term::TypeAnnotation(recurse(left), recurse(right)).into()
         }
+        Term::Tuple(elements) => Term::Tuple(elements.iter().map(recurse).collect()).into(),
+        Term::TupleType(elements) => Term::TupleType(elements.iter().map(recurse).collect()).into(),
+        Term::Match(input, cases) => Term::Match(
+            recurse(input),
+            cases
+                .iter()
+                .map(|(pat, case)| {
+                    (
+                        pat.clone(),
+                        substitute_case(pat, case, to_substitute, replacement),
+                    )
+                })
+                .collect(),
+        )
+        .into(),
+    }
+}
+
+pub fn match_pattern(pattern: &Pattern, term: &PTerm) -> Option<HashMap<Name, PTerm>> {
+    match (pattern, term.as_ref()) {
+        (Pattern::Var(name), _) => Some([(name.clone(), term.clone())].into()),
+        (Pattern::UnTuple(element_patterns), Term::Tuple(elements)) => {
+            if element_patterns.len() != elements.len() {
+                return None;
+            }
+
+            let mut result = HashMap::new();
+            for (pattern, element) in element_patterns.iter().zip(elements) {
+                result.extend(match_pattern(pattern, element)?);
+            }
+            Some(result)
+        }
+        (Pattern::UnTuple(_), _) => None,
     }
 }
 
@@ -155,6 +201,17 @@ pub fn eval(term: &PTerm, vars: &mut Context) -> PTerm {
         }
         TypeAnnotation(term, _) => eval(term, vars),
         Literal(_) => term.clone(),
+        Tuple(elements) => Tuple(elements.iter().map(|e| eval(e, vars)).collect()).into(),
+        TupleType(elements) => TupleType(elements.iter().map(|e| eval(e, vars)).collect()).into(),
+        Match(input, cases) => {
+            let input = eval(input, vars);
+            cases
+                .iter()
+                .find_map(|(pattern, case)| {
+                    match_pattern(pattern, &input).map(|bound_names| todo!())
+                })
+                .unwrap_or_else(|| Match(input, cases.clone()).into())
+        }
     }
 }
 

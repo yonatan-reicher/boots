@@ -31,6 +31,7 @@ enum NameOptions {
     Drop,
     /// For variables pointing to a generic closure.
     ClosureHeadType,
+    TupleType,
 }
 
 impl NameGen {
@@ -56,6 +57,7 @@ impl NameOptions {
             Impl => "impl",
             Drop => "drop",
             ClosureHeadType => "closureHead",
+            TupleType => "tuple",
         }
     }
 }
@@ -77,12 +79,22 @@ struct Closure {
 
 type FunctionCTypes = HashMap<(PTerm, PTerm), Name>;
 
+type TupleCTypes = HashMap<PTerm, Tuple>;
+
+#[derive(Debug, Clone)]
+struct Tuple {
+    c_type_name: Name,
+    make_name: Name,
+    types: Vec<c::PTypeExpr>,
+}
+
 #[derive(Debug, Default)]
 struct Context {
     c_vars: CVars,
     n_vars: TypeContext,
     closures: Closures,
     function_c_types: FunctionCTypes,
+    tuple_c_types: TupleCTypes,
     name_gen: NameGen,
 }
 
@@ -278,7 +290,7 @@ fn closure_drop_function(
                     .iter()
                     .flat_map(|(field_name, field_type, field_type_expr)| {
                         let temp_name = name_gen.next(NameOptions::Var);
-                        [self_
+                        vec![self_
                             .var()
                             .arrow(field_name.clone())
                             .variable(temp_name.clone(), field_type_expr.clone())]
@@ -371,6 +383,24 @@ fn function_c_type_declaration(
     )
 }
 
+fn tuple_field_name(i: usize) -> Name {
+    Name::from(format!("field_{i}"))
+}
+
+fn compile_tuple_declaration(c: &Tuple) -> (Name, c::TopLevelDeclaration) {
+    (
+        c.c_type_name.clone(),
+        c::TopLevelDeclaration::Struct(
+            c.c_type_name.clone(),
+            c.types
+                .iter()
+                .enumerate()
+                .map(|(i, c_type)| (c_type.clone(), tuple_field_name(i)))
+                .collect(),
+        ),
+    )
+}
+
 pub fn compile(term: PTerm) -> c::Program {
     let term_type = infer(&term, &mut Default::default()).expect("Still no error handling...");
 
@@ -413,6 +443,13 @@ pub fn compile(term: PTerm) -> c::Program {
         declarations.extend(declaration);
     }
 
+    // Declare the tuples.
+    for tuple in context.tuple_c_types.values() {
+        let (forward_declaration, declaration) = compile_tuple_declaration(tuple);
+        forward_declarations.push(forward_declaration);
+        declarations.push(declaration);
+    }
+
     // Add the main function.
     declarations.push(c::TopLevelDeclaration::Function(main));
 
@@ -434,6 +471,8 @@ pub fn compile(term: PTerm) -> c::Program {
 fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
     let term = normalize(&term);
     let term_type = infer(&term, &mut con.n_vars).unwrap();
+    let term_type_expr = compile_type_expr(&term_type, con).unwrap();
+
     match term.as_ref() {
         Term::Var(name) => {
             let (_, var_c_name) = con.c_vars[name].clone();
@@ -455,10 +494,7 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
                 .var()
                 .arrow("call")
                 .call([func_var_name.clone().var(), arg_var_name.var()])
-                .variable(
-                    output_var_name.clone(),
-                    compile_type_expr(&term_type, con).unwrap(),
-                );
+                .variable(output_var_name.clone(), term_type_expr);
             // Dispose of the function. Don't dispose of the argument - the
             // function is responsible for that.
             let drop_func_and_arg = compile_drop(func_var_name, &func_type);
@@ -547,10 +583,7 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
             let set_output = closure_make_name
                 .var()
                 .call(captured_variable_calls)
-                .variable(
-                    output_var_name.clone(),
-                    compile_type_expr(&term_type, con).unwrap(),
-                );
+                .variable(output_var_name.clone(), term_type_expr);
             // Return a variable referencing the function.
             (vec![set_output], output_var_name)
         }
@@ -575,6 +608,37 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
 
             (prelude, body_ret_name)
         }
+        Term::Tuple(elements) => {
+            let mut prelude = Vec::new();
+            let name = con.name_gen.next(NameOptions::Var);
+
+            // Add element preludes and collect names.
+            let compiled_elements = elements
+                .iter()
+                .map(|x| {
+                    let (x_prelude, x_name) = compile_expr(x.clone(), con);
+                    prelude.extend(x_prelude);
+                    x_name.var()
+                })
+                .collect::<Vec<_>>();
+
+            // We can safely index this because we know the tuple type has been
+            // added to the context when compiling the type expression.
+            let tuple = con.tuple_c_types.get(&term_type).unwrap();
+
+            // Add tuple creation.
+            prelude.push(
+                tuple
+                    .make_name
+                    .clone()
+                    .var()
+                    .call(compiled_elements)
+                    .variable(name.clone(), term_type_expr),
+            );
+
+            (prelude, name)
+        }
+        Term::TupleType(_) => todo!(),
     }
 }
 
@@ -603,8 +667,13 @@ fn compile_literal_expr(literal: &Literal, con: &mut Context) -> (c::Block, Name
 fn compile_type_expr(term: &PTerm, con: &mut Context) -> Result<c::TypeExpr, ()> {
     let term = normalize(term);
     match term.as_ref() {
-        Term::Literal(Literal::Prop) => Ok(c::TypeExpr::Var("prop".into())),
-        Term::Literal(Literal::Type) => Ok(c::TypeExpr::Var("type".into())),
+        Term::Literal(literal) => match literal {
+            Literal::Prop => "prop".pipe(Ok),
+            Literal::Type => "type".pipe(Ok),
+            Literal::Str => "str".pipe(Ok),
+            Literal::StringAppend | Literal::String(..) => Err(()),
+        }
+        .map(|var_name| var_name.type_var()),
         Term::Arrow {
             kind: ArrowKind::Type,
             param_name: _,
@@ -623,7 +692,33 @@ fn compile_type_expr(term: &PTerm, con: &mut Context) -> Result<c::TypeExpr, ()>
                 });
             Ok(name.type_var().ptr())
         }
-        Term::Literal(Literal::Str) => "str".type_var().pipe(Ok),
-        _ => Err(()),
+        Term::TupleType(elements) => {
+            let c_elements = elements
+                .iter()
+                .map(|e| compile_type_expr(e, con).map(Rc::new))
+                .collect::<Result<Vec<_>, _>>()?;
+
+            let name = con.name_gen.next(NameOptions::TupleType);
+            let make_name = con.name_gen.next(NameOptions::Make);
+
+            let tuple = Tuple {
+                make_name,
+                c_type_name: name.clone(),
+                types: c_elements,
+            };
+
+            con.tuple_c_types.insert(term.clone(), tuple);
+
+            Ok(name.type_var())
+        }
+        Term::TypeAnnotation(_, _) => Err(()),
+        Term::Appl(_, _) => Err(()),
+        Term::Var(_) => Err(()),
+        Term::Let(_, _, _, _) => Err(()),
+        Term::Tuple(_) => Err(()),
+        Term::Arrow {
+            kind: ArrowKind::Value,
+            ..
+        } => Err(()),
     }
 }

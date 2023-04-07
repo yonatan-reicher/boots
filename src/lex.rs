@@ -70,8 +70,11 @@ define_plain_enum! { pub enum Symbol {
     ThinArrow "->",
     Equal "=",
     Colon ":",
+    Comma ",",
     OpenParen "(",
-    CloseParen ")"
+    CloseParen ")",
+    OpenCurly "{",
+    CloseCurly "}"
 } }
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]

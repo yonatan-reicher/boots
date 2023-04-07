@@ -1,4 +1,4 @@
-use crate::ast::{ArrowType, Ast, Literal};
+use crate::ast::{ArrowKind, Ast, Literal};
 use crate::lex::{lex, Keyword, LToken, NewLine, Symbol, Token};
 use crate::located::{Pos, Range};
 use crate::name::Name;
@@ -188,14 +188,14 @@ fn term(tokens: &mut TokenReader) -> Ast {
         // Allow indenting in!
         tokens.pop_indent_in();
         let ret = term(tokens);
-        return Ast::Arrow(ArrowType::Value, first_atom.into(), ret.into());
+        return Ast::Arrow(ArrowKind::Value, first_atom.into(), ret.into());
     }
 
     if tokens.pop_token_eq(Symbol::ThinArrow) {
         // Allow indenting in!
         tokens.pop_indent_in();
         let ret = term(tokens);
-        return Ast::Arrow(ArrowType::Type, first_atom.into(), ret.into());
+        return Ast::Arrow(ArrowKind::Type, first_atom.into(), ret.into());
     }
 
     if tokens.pop_token_eq(Token::Symbol(Symbol::Colon)) {
@@ -248,6 +248,53 @@ fn term(tokens: &mut TokenReader) -> Ast {
     application_term
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Commas {
+    HasCommas,
+    NoCommas,
+}
+
+/// Parses a list of terms seperated by commas.
+/// The list can be seperated on both sides.
+fn parse_list<'source>(tokens: &mut TokenReader<'source>, end: impl Copy + Into<Token<'source>>) -> (Vec<Ast>, Commas) {
+    let mut ret = Vec::new();
+    let mut commas = Commas::NoCommas;
+
+    let out_indent = tokens.indent;
+    tokens.pop_indent_in();
+    let in_indent = tokens.indent;
+
+    // TODO: Allow elm style lists.
+    loop {
+        // Parse a term.
+        ret.push(term(tokens));
+        // Expect a potential comma.
+        let seen_comma = tokens.pop_token_eq(Symbol::Comma);
+        if seen_comma {
+            commas = Commas::HasCommas;
+        }
+        // After wards, if we indent out, we should reach the end.
+        if tokens.pop_indent_same(out_indent) {
+            if !tokens.pop_token_eq(end) {
+                todo!("Put error here")
+            }
+            break (ret, commas);
+        }
+        // Or if we reach the end token.
+        if tokens.pop_token_eq(end) {
+            break (ret, commas);
+        }
+
+        // If this is not the end of the list, and there was no comma, then
+        // the list is not written correctly.
+        if !seen_comma {
+            todo!("Error");
+        }
+
+        tokens.pop_indent_same(in_indent);
+    }
+}
+
 /// Parses an atom from the current position.
 fn atom(tokens: &mut TokenReader) -> Option<Ast> {
     let start = tokens.get_range(tokens.index).0;
@@ -257,15 +304,18 @@ fn atom(tokens: &mut TokenReader) -> Option<Ast> {
     }
 
     if tokens.pop_token_eq(Symbol::OpenParen) {
-        // Allow newlines after the opening parenthesis.
-        tokens.pop_indent();
 
-        // Parse the term.
-        let term = term(tokens);
+        let (mut terms, commas) = parse_list(tokens, Symbol::CloseParen);
 
-        // skip more linebreaks.
-        tokens.pop_indent();
+        // Just parenthesis with commas and a single element is not a tuple.
+        if Commas::NoCommas == commas && terms.len() == 1 {
+            return Some(terms.pop().unwrap());
+        }
 
+        // Every other case is a tuple.
+        return Some(Ast::Tuple(terms));
+
+        /*
         if !tokens.pop_token_eq(Symbol::CloseParen) {
             let expected_close = tokens.get_range(tokens.index).0;
             // Try to find where the parenthesis is closed.
@@ -282,7 +332,12 @@ fn atom(tokens: &mut TokenReader) -> Option<Ast> {
                 found_close,
             });
         }
-        return Some(term);
+        */
+    }
+
+    if tokens.pop_token_eq(Symbol::OpenCurly) {
+        let (terms, _) = parse_list(tokens, Symbol::CloseCurly);
+        return Some(Ast::TupleType(terms));
     }
 
     if let Some(ident) = tokens.pop_token_ident() {
@@ -329,7 +384,7 @@ mod tests {
         assert_eq!(
             parse(source),
             Ok(Ast::Arrow(
-                ArrowType::Value,
+                ArrowKind::Value,
                 Ast::TypeAnnotation(
                     Ast::Var("x".into(), r(1..2)).into(),
                     Ast::Var("str".into(), r(4..7)).into()

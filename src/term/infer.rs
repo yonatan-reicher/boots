@@ -127,7 +127,15 @@ impl<'a> State<'a> {
 
                 let rhs_type = annotation.clone().map(Ok).unwrap_or(rhs_type)?;
                 with_variable!(self.context, (name, rhs_type), { self.infer(body) })
-            } // Type => Err(vec![format!("Type's type cannot be inferred")]),
+            }
+            Term::Tuple(elements) => {
+                let element_types = elements
+                    .iter()
+                    .map(|e| self.infer(e))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(Term::TupleType(element_types).into())
+            }
+            Term::TupleType(_) => Ok(Literal::Type.pipe(Term::Literal).into())
         }
     }
 

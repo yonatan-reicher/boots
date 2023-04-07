@@ -7,10 +7,12 @@ pub type PAst = Box<Ast>;
 pub enum Ast {
     Var(Name, Range),
     Appl(PAst, PAst, Vec<Ast>),
-    Arrow(ArrowType, PAst, PAst),
+    Arrow(ArrowKind, PAst, PAst),
     TypeAnnotation(PAst, PAst),
     Literal(Literal, Range),
     Let(PAst, PAst, PAst),
+    Tuple(Vec<Ast>),
+    TupleType(Vec<Ast>),
     Error,
 }
 
@@ -22,8 +24,9 @@ pub enum Literal {
     Type,
 }
 
+// Unify with term::ArrowKind.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub enum ArrowType {
+pub enum ArrowKind {
     Value,
     Type,
 }
