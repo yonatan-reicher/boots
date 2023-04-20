@@ -62,7 +62,9 @@ macro_rules! define_plain_enum {
 
 define_plain_enum! { pub enum Keyword {
     Prop "prop",
-    Type "type"
+    Type "type",
+    Match "match",
+    With "with"
 } }
 
 define_plain_enum! { pub enum Symbol {

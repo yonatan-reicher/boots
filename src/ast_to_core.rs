@@ -1,7 +1,8 @@
 use crate::ast::{ArrowKind as AstArrowKind, Ast, Literal};
 use crate::global::*;
 use crate::name::Name;
-use crate::term::{ArrowKind, Literal as CoreLiteral, PTerm, Term};
+use crate::term::{ArrowKind, Literal as CoreLiteral, PTerm, Term, Pattern};
+use std::rc::Rc;
 
 #[derive(Clone, Debug)]
 pub enum Error {
@@ -41,6 +42,26 @@ impl State {
 
     fn ast_slice_to_core(&mut self, asts: &[Ast]) -> Result<Vec<PTerm>, ()> {
         asts.iter().map(|x| self.ast_to_core(x)).collect()
+    }
+
+    pub fn ast_to_pattern(&mut self, ast: &Ast) -> Result<Pattern, ()> {
+        match ast {
+            Ast::Var(name, _) => Pattern::Var(name.clone()).pipe(Ok),
+            Ast::Tuple(vec) => vec
+                .iter()
+                .map(|x| self.ast_to_pattern(x))
+                .collect::<Result<Vec<_>, _>>()
+                .map(Pattern::UnTuple),
+            // Emit errors for these cases.
+            Ast::Appl(_, _, _) => todo!(),
+            Ast::TypeAnnotation(_, _) => todo!(),
+            Ast::Literal(_, _) => todo!(),
+            Ast::Let(_, _, _) => todo!(),
+            Ast::TupleType(_) => todo!(),
+            Ast::Match(_, _) => todo!(),
+            Ast::Arrow(_, _, _) => todo!(),
+            Ast::Error => todo!(),
+        }
     }
 
     pub fn ast_to_core(&mut self, ast: &Ast) -> Result<PTerm, ()> {
@@ -118,6 +139,19 @@ impl State {
             Ast::Tuple(terms) => Term::Tuple(self.ast_slice_to_core(terms)?).into(),
             Ast::TupleType(terms) => Term::TupleType(self.ast_slice_to_core(terms)?).into(),
             Ast::Error => todo!(),
+            Ast::Match(input, cases) => {
+                let input_term = self.ast_to_core(input)?;
+                cases
+                    .iter()
+                    .map(|(pat, term)| {
+                        let pat = self.ast_to_pattern(pat).map(Rc::new);
+                        let term = self.ast_to_core(term);
+                        Ok((pat?, term?))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+                    .pipe(|cases| Term::Match(input_term, cases))
+                    .pipe(Term::into)
+            },
         }
         .pipe(Ok)
     }

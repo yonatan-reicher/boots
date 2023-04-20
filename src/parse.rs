@@ -6,6 +6,7 @@ use crate::name::Name;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
     TermNotFound(Pos),
+    // TODO
     UnclosedParenthesis {
         open: Pos,
         expected_close: Pos,
@@ -146,6 +147,7 @@ impl<'source> TokenReader<'source> {
         self.pop_indent_helper(|indent, _| indent == to_indent)
     }
 
+    #[allow(dead_code)]
     pub fn pop_indent(&mut self) -> bool {
         self.pop_indent_helper(|_, _| true)
     }
@@ -171,9 +173,57 @@ pub fn parse(source: &str) -> Result<Ast, Vec<Error>> {
     }
 }
 
+fn match_term(tokens: &mut TokenReader) -> Ast {
+    let start_indent = tokens.indent;
+
+    let input = term(tokens);
+
+    if !tokens.pop_token_eq(Keyword::With) {
+        todo!("Fail here.")
+    }
+
+    // Parse the match cases.
+    if !tokens.pop_token_eq(Symbol::OpenCurly) {
+        todo!("Fail here.")
+    }
+
+    if !tokens.pop_indent_in() {
+        todo!("Fail here.")
+    }
+
+    let inner_indent = tokens.indent;
+
+    let mut cases = Vec::new();
+
+    while {
+        let pattern = atom(tokens).unwrap_or_else(|| todo!("Fail here."));
+        if !tokens.pop_token_eq(Symbol::FatArrow) {
+            todo!("Fail here.")
+        }
+        let result = term(tokens);
+        cases.push((pattern, result));
+        tokens.pop_indent_same(inner_indent)
+    } {}
+
+    if !tokens.pop_indent_same(start_indent) {
+        dbg!(&tokens.tokens[tokens.index..]);
+        todo!("Fail here.")
+    }
+
+    if !tokens.pop_token_eq(Symbol::CloseCurly) {
+        todo!("Fail on no curly.")
+    }
+
+    Ast::Match(input.into(), cases)
+}
+
 /// Parses a term from the current position.
 fn term(tokens: &mut TokenReader) -> Ast {
     let start = tokens.curr_range().0;
+
+    if tokens.pop_token_eq(Keyword::Match) {
+        return match_term(tokens);
+    }
 
     // First, parse an atom.
     let first_atom = match atom(tokens) {
@@ -230,7 +280,11 @@ fn term(tokens: &mut TokenReader) -> Ast {
             rest_of_applications.push(next_argument);
         }
 
-        return Ast::Appl(application_term.into(), first_argument.into(), rest_of_applications);
+        return Ast::Appl(
+            application_term.into(),
+            first_argument.into(),
+            rest_of_applications,
+        );
     }
 
     // Is this a assign expression?
@@ -239,6 +293,7 @@ fn term(tokens: &mut TokenReader) -> Ast {
         tokens.pop_indent_in(); // Fine if this fails.
         let rhs = term(tokens);
         if !tokens.pop_indent_same(start_indent) {
+            dbg!(&tokens.tokens[tokens.index..]);
             todo!("error: expected expression with same indent");
         }
         let ret = term(tokens);
@@ -256,7 +311,10 @@ enum Commas {
 
 /// Parses a list of terms seperated by commas.
 /// The list can be seperated on both sides.
-fn parse_list<'source>(tokens: &mut TokenReader<'source>, end: impl Copy + Into<Token<'source>>) -> (Vec<Ast>, Commas) {
+fn parse_list<'source>(
+    tokens: &mut TokenReader<'source>,
+    end: impl Copy + Into<Token<'source>>,
+) -> (Vec<Ast>, Commas) {
     let mut ret = Vec::new();
     let mut commas = Commas::NoCommas;
 
@@ -304,7 +362,6 @@ fn atom(tokens: &mut TokenReader) -> Option<Ast> {
     }
 
     if tokens.pop_token_eq(Symbol::OpenParen) {
-
         let (mut terms, commas) = parse_list(tokens, Symbol::CloseParen);
 
         // Just parenthesis with commas and a single element is not a tuple.

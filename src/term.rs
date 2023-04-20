@@ -180,6 +180,10 @@ impl Pattern {
 }
 
 impl Term {
+    pub fn into_pterm(self) -> PTerm {
+        Rc::new(self)
+    }
+
     pub fn is_atom(&self) -> bool {
         matches!(
             self,
@@ -360,10 +364,11 @@ impl Display for Term {
             Tuple(vec) => fmt_tuple(f, vec, '(', ')'),
             TupleType(vec) => fmt_tuple(f, vec, '{', '}'),
             Match(term, cases) => {
-                write!(f, "match {term} with")?;
+                write!(f, "match {term} with {{ ")?;
                 for (pattern, body) in cases {
-                    write!(f, "{pattern} => {body}",)?;
+                    write!(f, "{pattern} => {body} ",)?;
                 }
+                write!(f, "}}")?;
                 Ok(())
             }
         }

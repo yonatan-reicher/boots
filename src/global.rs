@@ -22,6 +22,28 @@ macro_rules! with_variable {
 }
 pub(crate) use with_variable;
 
+macro_rules! with_variables {
+    ($variables:expr, $variables_to_add:expr, $do:expr) => {{
+
+        let old_values = $variables_to_add.into_iter().map(|(name, value)| {
+            (name.clone(), $variables.insert(name.clone(), value))
+        }).collect::<Vec<_>>();
+
+        let x = $do;
+
+        for (name, old_value) in old_values {
+            if let Some(old_value) = old_value {
+                $variables.insert(name, old_value);
+            } else {
+                $variables.remove(&name);
+            }
+        }
+
+        x
+    }};
+}
+pub(crate) use with_variables;
+
 #[inline]
 pub fn extend<T, E: Extend<T>, I: IntoIterator<Item = T>>(mut left: E, right: I) -> E {
     left.extend(right);

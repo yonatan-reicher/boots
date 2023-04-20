@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
-use super::{normalize, substitute, ArrowKind, Literal, PTerm, Term};
-use crate::global::{with_variable, Pipe};
+use crate::term::{normalize, substitute, ArrowKind, Literal, PTerm, Term, Pattern};
+use crate::global::{with_variable, with_variables, Pipe};
 use crate::name::Name;
 
 pub type Context = HashMap<Name, PTerm>;
@@ -12,6 +12,10 @@ pub enum Error {
     NotApplicable,
     ArgumentTypeDoesntMatch,
     WrongTypeAnnotation,
+    CantUnTupleNonTuple,
+    UnTuplePatternCountMismatch,
+    EmptyMatch,
+    MatchArmsTypeMismatch,
 }
 
 pub fn infer(term: &PTerm, context: &mut Context) -> Result<PTerm, Vec<Error>> {
@@ -36,6 +40,36 @@ struct State<'a> {
 }
 
 impl<'a> State<'a> {
+    pub fn infer_pattern(&mut self, pat: &Pattern, input_type: &PTerm) -> Result<Vec<(Name, PTerm)>, ()> {
+        match pat {
+            Pattern::Var(name) => Ok(vec![(name.clone(), input_type.clone())]),
+            Pattern::UnTuple(pats) => {
+                let element_types = match input_type.as_ref() {
+                    Term::TupleType(element_types) => element_types,
+                    _ => {
+                        self.errors.push(Error::CantUnTupleNonTuple);
+                        return Err(())
+                    }
+                };
+
+                if element_types.len() != pats.len() {
+                    self.errors.push(Error::UnTuplePatternCountMismatch);
+                    return Err(())
+                }
+
+                element_types
+                    .into_iter()
+                    .zip(pats)
+                    .map(|(element_type, pat)| self.infer_pattern(pat, element_type))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .flatten()
+                    .collect::<Vec<_>>()
+                    .pipe(Ok)
+            }
+        }
+    }
+
     pub fn infer(&mut self, term: &PTerm) -> Result<PTerm, ()> {
         match term.as_ref() {
             Term::Var(name) => self
@@ -135,7 +169,31 @@ impl<'a> State<'a> {
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(Term::TupleType(element_types).into())
             }
-            Term::TupleType(_) => Ok(Literal::Type.pipe(Term::Literal).into())
+            Term::TupleType(_) => Ok(Literal::Type.pipe(Term::Literal).into()),
+            Term::Match(input, cases) => {
+                let input_type = self.infer(input)?;
+                let case_types : Vec<PTerm> = cases
+                    .iter()
+                    .map(|(pattern, case)| {
+                        let binding_types = self.infer_pattern(pattern, &input_type)?;
+                        let case_type = with_variables!(self.context, binding_types, {
+                            self.infer(case)?
+                        });
+                        Ok(case_type)
+                    })
+                    .collect::<Result<Vec<PTerm>, _>>()?;
+
+                if case_types.len() == 0 {
+                    self.errors.push(Error::EmptyMatch);
+                    return Err(());
+                }
+
+                if case_types[1..].iter().any(|t| t != &case_types[0]) {
+                    self.errors.push(Error::MatchArmsTypeMismatch);
+                }
+
+                Ok(case_types[0].clone())
+            },
         }
     }
 

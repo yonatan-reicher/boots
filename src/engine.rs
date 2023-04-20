@@ -51,6 +51,6 @@ impl Engine {
         for (name, value) in self.eval_context.borrow().iter() {
             term = substitute(&term, name, value);
         }
-        compile(term)
+        compile(&term)
     }
 }

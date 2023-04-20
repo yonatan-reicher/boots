@@ -1,4 +1,4 @@
-use crate::global::{with_variable, Pipe};
+use crate::global::{with_variable, with_variables};
 use crate::name::Name;
 use crate::term::{PTerm, Pattern, Term};
 use std::collections::HashMap;
@@ -208,7 +208,12 @@ pub fn eval(term: &PTerm, vars: &mut Context) -> PTerm {
             cases
                 .iter()
                 .find_map(|(pattern, case)| {
-                    match_pattern(pattern, &input).map(|bound_names| todo!())
+                    match_pattern(pattern, &input)
+                    .map(|bound_names| {
+                        with_variables!(vars, bound_names, {
+                            eval(case, vars)
+                        })
+                    })
                 })
                 .unwrap_or_else(|| Match(input, cases.clone()).into())
         }

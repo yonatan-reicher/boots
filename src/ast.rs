@@ -13,8 +13,11 @@ pub enum Ast {
     Let(PAst, PAst, PAst),
     Tuple(Vec<Ast>),
     TupleType(Vec<Ast>),
+    Match(PAst, Vec<MatchArm>),
     Error,
 }
+
+pub type MatchArm = (Ast, Ast);
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Literal {
