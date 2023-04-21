@@ -315,6 +315,11 @@ fn parse_list<'source>(
     tokens: &mut TokenReader<'source>,
     end: impl Copy + Into<Token<'source>>,
 ) -> (Vec<Ast>, Commas) {
+    // Edge case: Empty list.
+    if tokens.pop_token_eq(end) {
+        return (Vec::new(), Commas::NoCommas);
+    }
+
     let mut ret = Vec::new();
     let mut commas = Commas::NoCommas;
 

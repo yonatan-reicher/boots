@@ -520,6 +520,10 @@ struct CompiledPattern {
     bindings: Vec<(Name, ExprRet)>,
 }
 
+fn compile_string_eq(left: c::Expr, right: c::Expr) -> c::Expr {
+    "strcmp".var().call(vec![left, right]).eq(0.literal())
+}
+
 fn compile_pattern(pattern: &Pattern, input_var: &ExprRet, con: &mut Context) -> CompiledPattern {
     match pattern {
         Pattern::Var(name) => CompiledPattern {
@@ -582,6 +586,13 @@ fn compile_pattern(pattern: &Pattern, input_var: &ExprRet, con: &mut Context) ->
                 prelude: prelude.extend_pipe(flatten(preludes)),
                 cond: and_all(conds),
                 bindings: flatten(bindings),
+            }
+        }
+        Pattern::String(s) => {
+            CompiledPattern {
+                prelude: vec![],
+                bindings: vec![],
+                cond: compile_string_eq(input_var.c_name.clone().var(), s.clone().literal()),
             }
         }
     }

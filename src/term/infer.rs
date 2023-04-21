@@ -16,6 +16,7 @@ pub enum Error {
     UnTuplePatternCountMismatch,
     EmptyMatch,
     MatchArmsTypeMismatch,
+    StringPatternWrongType(PTerm),
 }
 
 pub fn infer(term: &PTerm, context: &mut Context) -> Result<PTerm, Vec<Error>> {
@@ -66,6 +67,14 @@ impl<'a> State<'a> {
                     .flatten()
                     .collect::<Vec<_>>()
                     .pipe(Ok)
+            }
+            Pattern::String(_) => {
+                if !matches!(input_type.as_ref(), Term::Literal(Literal::Str)) {
+                    self.errors.push(Error::StringPatternWrongType(input_type.clone()));
+                    return Err(())
+                }
+
+                Ok(vec![])
             }
         }
     }

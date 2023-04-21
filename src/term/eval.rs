@@ -1,6 +1,6 @@
 use crate::global::{with_variable, with_variables};
 use crate::name::Name;
-use crate::term::{PTerm, Pattern, Term};
+use crate::term::{PTerm, Pattern, Term, Literal};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -95,6 +95,11 @@ pub fn substitute(term: &PTerm, to_substitute: &Name, replacement: &PTerm) -> PT
 }
 
 pub fn match_pattern(pattern: &Pattern, term: &PTerm) -> Option<HashMap<Name, PTerm>> {
+    // Don't even try to match if the term is not reduced.
+    if !term.is_reduced() {
+        return None;
+    }
+
     match (pattern, term.as_ref()) {
         (Pattern::Var(name), _) => Some([(name.clone(), term.clone())].into()),
         (Pattern::UnTuple(element_patterns), Term::Tuple(elements)) => {
@@ -109,6 +114,14 @@ pub fn match_pattern(pattern: &Pattern, term: &PTerm) -> Option<HashMap<Name, PT
             Some(result)
         }
         (Pattern::UnTuple(_), _) => None,
+        (Pattern::String(s), Term::Literal(Literal::String(s2))) => {
+            if s == s2 {
+                Some(HashMap::new())
+            } else {
+                None
+            }
+        }
+        (Pattern::String(_), _) => None,
     }
 }
 

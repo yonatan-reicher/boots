@@ -18,13 +18,14 @@ pub enum ArrowKind {
     Type,
 }
 
-pub type PTerm = Rc<Term>;
-
 #[derive(Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Pattern {
     Var(Name),
     UnTuple(Vec<Pattern>),
+    String(Name),
 }
+
+pub type PTerm = Rc<Term>;
 
 // TODO: Is our PartialOrd valid? Because we have overriden partial eq.
 // Aternatively, do not implement PartialOrd and PartialEq at all.
@@ -175,6 +176,7 @@ impl Pattern {
         match self {
             Pattern::Var(name) => [name.clone()].into(),
             Pattern::UnTuple(patterns) => patterns.iter().flat_map(|p| p.free_vars()).collect(),
+            Pattern::String(_) => [].into(),
         }
     }
 }
@@ -189,6 +191,21 @@ impl Term {
             self,
             Term::Literal(_) | Term::Var(_) | Term::Tuple(_) | Term::TupleType(_)
         )
+    }
+
+    pub fn is_reduced(&self) -> bool {
+        match self {
+            Term::Literal(_) => true,
+            Term::Tuple(elements) | Term::TupleType(elements) => {
+                elements.iter().all(|e| e.is_reduced())
+            }
+            Term::Arrow { .. } => true, // TODO: Is this correct? Are all functions reduced?
+            Term::Appl(_, _) => false,
+            Term::TypeAnnotation(_, _) => false,
+            Term::Var(_) => false,
+            Term::Let(_, _, _, _) => false,
+            Term::Match(_, _) => false,
+        }
     }
 
     pub fn free_vars(&self) -> HashSet<Name> {
@@ -282,10 +299,11 @@ impl<'a> Display for TermPrint<'a> {
 fn fmt_tuple(f: &mut Formatter, terms: &[impl Display], start: char, end: char) -> fmt::Result {
     write!(f, "{start}")?;
     for (i, term) in terms.iter().enumerate() {
-        if i > 0 {
+        write!(f, "{term}")?;
+        let comma_needed = i < terms.len() - 1 || terms.len() == 1;
+        if comma_needed {
             write!(f, ", ")?;
         }
-        write!(f, "{term}")?;
     }
     write!(f, "{end}")
 }
@@ -295,6 +313,7 @@ impl Display for Pattern {
         match self {
             Pattern::Var(var) => write!(f, "{}", var),
             Pattern::UnTuple(terms) => fmt_tuple(f, terms, '(', ')'),
+            Pattern::String(s) => write!(f, "{:?}", s),
         }
     }
 }

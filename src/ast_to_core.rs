@@ -2,6 +2,7 @@ use crate::ast::{ArrowKind as AstArrowKind, Ast, Literal};
 use crate::global::*;
 use crate::name::Name;
 use crate::term::{ArrowKind, Literal as CoreLiteral, PTerm, Term, Pattern};
+use crate::yes_no::prelude::*;
 use std::rc::Rc;
 
 #[derive(Clone, Debug)]
@@ -52,6 +53,7 @@ impl State {
                 .map(|x| self.ast_to_pattern(x))
                 .collect::<Result<Vec<_>, _>>()
                 .map(Pattern::UnTuple),
+            Ast::Literal(Literal::String(s), _) => Pattern::String(s.clone()).pipe(Ok),
             // Emit errors for these cases.
             Ast::Appl(_, _, _) => todo!(),
             Ast::TypeAnnotation(_, _) => todo!(),

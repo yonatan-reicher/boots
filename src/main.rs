@@ -1,4 +1,5 @@
 mod ast;
+mod yes_no;
 mod ast_to_core;
 mod c;
 mod cli;
