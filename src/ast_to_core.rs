@@ -2,7 +2,6 @@ use crate::ast::{ArrowKind as AstArrowKind, Ast, Literal};
 use crate::global::*;
 use crate::name::Name;
 use crate::term::{ArrowKind, Literal as CoreLiteral, PTerm, Term, Pattern};
-use crate::yes_no::prelude::*;
 use std::rc::Rc;
 
 #[derive(Clone, Debug)]
@@ -68,7 +67,7 @@ impl State {
 
     pub fn ast_to_core(&mut self, ast: &Ast) -> Result<PTerm, ()> {
         match ast {
-            Ast::Var(name, _) => Term::Var(name.clone()).into(),
+            Ast::Var(name, _) => Term::var(name.clone()).into(),
             Ast::Appl(func, arg1, args_rest) => {
                 // Visit the function and all the arguments.
                 let func = self.ast_to_core(func);
@@ -80,7 +79,7 @@ impl State {
 
                 if let (Ok(func), Ok(args)) = (func, args) {
                     args.into_iter()
-                        .fold(func, |func, arg| Term::Appl(func, arg).into())
+                        .fold(func, |func, arg| Term::appl(func, arg).into())
                 } else {
                     return Err(());
                 }
@@ -124,7 +123,7 @@ impl State {
             Ast::TypeAnnotation(val, typ) => {
                 let val = self.ast_to_core(val);
                 let typ = self.ast_to_core(typ);
-                Term::TypeAnnotation(val?, typ?).into()
+                Term::type_annotation(val?, typ?).into()
             }
             Ast::Literal(literal, _) => self.literal_to_core(literal).pipe(Term::Literal).into(),
             Ast::Let(bind, value, body) => {
@@ -136,7 +135,7 @@ impl State {
                     .transpose();
                 let value = self.ast_to_core(value);
                 let body = self.ast_to_core(body);
-                Term::Let(name?, typ?, value?, body?).into()
+                Term::let_(name?, typ?, value?, body?).into()
             }
             Ast::Tuple(terms) => Term::Tuple(self.ast_slice_to_core(terms)?).into(),
             Ast::TupleType(terms) => Term::TupleType(self.ast_slice_to_core(terms)?).into(),
@@ -151,8 +150,8 @@ impl State {
                         Ok((pat?, term?))
                     })
                     .collect::<Result<Vec<_>, _>>()?
-                    .pipe(|cases| Term::Match(input_term, cases))
-                    .pipe(Term::into)
+                    .pipe(|cases| Term::match_(input_term, cases))
+                    .pipe(Term::into_pterm)
             },
         }
         .pipe(Ok)

@@ -606,12 +606,12 @@ fn compile_expr(term: &PTerm, con: &mut Context) -> (c::Block, ExprRet) {
     let term_type_expr: c::PTypeExpr = compile_type_expr(&term_type, con).unwrap().into();
 
     let (prelude, out_name) = match term.as_ref() {
-        Term::Var(name) => {
+        Term::Var(_, name) => {
             let (_, var_c_name) = con.c_vars[name].clone();
             let var_type = con.n_vars[name].clone();
             (compile_clone(var_c_name.clone(), &var_type), var_c_name)
         }
-        Term::Appl(func, arg) =>
+        Term::Appl(_, func, arg) =>
         // Should first save the closure pointer (lhs) in a variable,
         // then pass it to it's .call field along with the argument (rhs!).
         {
@@ -727,10 +727,10 @@ fn compile_expr(term: &PTerm, con: &mut Context) -> (c::Block, ExprRet) {
             ..
         } => panic!(),
         Term::Literal(literal) => compile_literal_expr(literal, con),
-        Term::TypeAnnotation(x, _) => {
+        Term::TypeAnnotation(_, x, _) => {
             compile_expr(x, con).pipe(|(prelude, var)| (prelude, var.c_name))
         }
-        Term::Let(name, _, rhs, body) => {
+        Term::Let(_, name, _, rhs, body) => {
             let (rhs_prelude, var) = compile_expr(rhs, con);
 
             let typ = infer(rhs, &mut con.n_vars).unwrap();
@@ -774,7 +774,7 @@ fn compile_expr(term: &PTerm, con: &mut Context) -> (c::Block, ExprRet) {
 
             (prelude, name)
         }
-        Term::Match(input, cases) => {
+        Term::Match(_, input, cases) => {
             let (input_prelude, input_var) = compile_expr(input, con);
             let output_name = con.name_gen.next(NameOptions::Var);
 
@@ -924,15 +924,15 @@ fn compile_type_expr(term: &PTerm, con: &mut Context) -> Result<c::TypeExpr, ()>
                 Ok(name)
             })
             .map(c::TypeExpr::Var),
-        Term::TypeAnnotation(_, _) => Err(()),
-        Term::Appl(_, _) => Err(()),
-        Term::Var(_) => Err(()),
-        Term::Let(_, _, _, _) => Err(()),
-        Term::Tuple(_) => Err(()),
+        Term::TypeAnnotation(..) => Err(()),
+        Term::Appl(..) => Err(()),
+        Term::Var(..) => Err(()),
+        Term::Let(..) => Err(()),
+        Term::Tuple(..) => Err(()),
         Term::Arrow {
             kind: ArrowKind::Value,
             ..
         } => Err(()),
-        Term::Match(_, _) => Err(()),
+        Term::Match(..) => Err(()),
     }
 }

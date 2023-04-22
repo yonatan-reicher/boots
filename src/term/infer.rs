@@ -81,12 +81,12 @@ impl<'a> State<'a> {
 
     pub fn infer(&mut self, term: &PTerm) -> Result<PTerm, ()> {
         match term.as_ref() {
-            Term::Var(name) => self
+            Term::Var(_, name) => self
                 .context
                 .get(name)
                 .cloned()
                 .ok_or_else(|| self.errors.push(Error::VariableNotFound(name.clone()))),
-            Term::Appl(lhs, rhs) => {
+            Term::Appl(_, lhs, rhs) => {
                 let lhs_type = self.infer(lhs);
                 let rhs_type = self.infer(rhs);
                 let lhs_type = lhs_type?;
@@ -147,7 +147,7 @@ impl<'a> State<'a> {
                 // The pi binder's type is the type of the body.
                 Ok(body_type)
             }
-            Term::TypeAnnotation(term, typ) => {
+            Term::TypeAnnotation(_, term, typ) => {
                 let term_type = self.infer(term)?;
                 //
                 // Check that the type of term matches the type annotation.
@@ -158,7 +158,7 @@ impl<'a> State<'a> {
                 Ok(term_type)
             }
             Term::Literal(l) => Self::literal_type(l).pipe(Ok),
-            Term::Let(name, annotation, rhs, body) => {
+            Term::Let(_, name, annotation, rhs, body) => {
                 let rhs_type = self.infer(rhs);
 
                 // Check the type annotation.
@@ -179,7 +179,7 @@ impl<'a> State<'a> {
                 Ok(Term::TupleType(element_types).into())
             }
             Term::TupleType(_) => Ok(Literal::Type.pipe(Term::Literal).into()),
-            Term::Match(input, cases) => {
+            Term::Match(_, input, cases) => {
                 let input_type = self.infer(input)?;
                 let case_types : Vec<PTerm> = cases
                     .iter()
