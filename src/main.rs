@@ -1,16 +1,16 @@
 mod ast;
-mod yes_no;
-mod ast_to_core;
+mod ast_to_term;
 mod c;
 mod cli;
 mod compile;
-mod term;
 mod engine;
 mod global;
 mod lex;
 mod located;
 mod name;
 mod parse;
+mod term;
+mod yes_no;
 
 use cli::{parse_args, Action, Cli};
 use std::fs;
@@ -93,7 +93,7 @@ fn main() -> IORes<()> {
                     return Ok(true);
                 }
                 let ast = parse::parse(source).expect("Failed to parse");
-                let expr: PTerm = ast_to_core::ast_to_core(&ast).unwrap();
+                let expr: PTerm = ast_to_term::ast_to_term(&ast).unwrap();
                 let typ = engine
                     .infer_type(expr.clone())
                     .expect("Failed to infer type");
@@ -108,7 +108,7 @@ fn main() -> IORes<()> {
         } => {
             let source = fs::read_to_string(filename)?;
             let ast = parse::parse(&source).unwrap();
-            let expr: PTerm = ast_to_core::ast_to_core(&ast).unwrap();
+            let expr: PTerm = ast_to_term::ast_to_term(&ast).unwrap();
             let ty = engine.infer_type(expr.clone()).unwrap();
             let evaluated = engine.eval(expr);
             println!("{evaluated}");
@@ -119,7 +119,7 @@ fn main() -> IORes<()> {
         Action::Compile { filename } => {
             let source = fs::read_to_string(filename)?;
             let ast = parse::parse(&source).unwrap();
-            let expr: PTerm = ast_to_core::ast_to_core(&ast).unwrap();
+            let expr: PTerm = ast_to_term::ast_to_term(&ast).unwrap();
             let _ty = engine.infer_type(expr.clone()).unwrap();
             let evaluated = engine.eval(expr);
             println!("{evaluated}");

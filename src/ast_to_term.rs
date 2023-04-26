@@ -1,11 +1,10 @@
 use crate::ast::{ArrowKind as AstArrowKind, Ast, Literal};
 use crate::global::*;
 use crate::name::Name;
-use crate::term::{ArrowKind, Literal as CoreLiteral, PTerm, Term, Pattern};
-use crate::yes_no::prelude::*;
+use crate::term::{ArrowKind, Literal as TermLiteral, PTerm, Pattern, Term};
 use std::rc::Rc;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Error {
     ExpectedNameAndTypeBeforeArrow,
     ExpectedBindingsBeforeArrow,
@@ -42,7 +41,7 @@ impl State {
     }
 
     fn ast_slice_to_core(&mut self, asts: &[Ast]) -> Result<Vec<PTerm>, ()> {
-        asts.iter().map(|x| self.ast_to_core(x)).collect()
+        asts.iter().map(|x| self.ast_to_term(x)).collect()
     }
 
     pub fn ast_to_pattern(&mut self, ast: &Ast) -> Result<Pattern, ()> {
@@ -66,16 +65,16 @@ impl State {
         }
     }
 
-    pub fn ast_to_core(&mut self, ast: &Ast) -> Result<PTerm, ()> {
+    pub fn ast_to_term(&mut self, ast: &Ast) -> Result<PTerm, ()> {
         match ast {
             Ast::Var(name, _) => Term::Var(name.clone()).into(),
             Ast::Appl(func, arg1, args_rest) => {
                 // Visit the function and all the arguments.
-                let func = self.ast_to_core(func);
+                let func = self.ast_to_term(func);
                 let args = [arg1.as_ref()]
                     .into_iter()
                     .chain(args_rest.iter())
-                    .map(|arg| self.ast_to_core(arg))
+                    .map(|arg| self.ast_to_term(arg))
                     .pipe(collect_results);
 
                 if let (Ok(func), Ok(args)) = (func, args) {
@@ -86,7 +85,7 @@ impl State {
                 }
             }
             Ast::Arrow(AstArrowKind::Value, bind, right) => {
-                let right = self.ast_to_core(right);
+                let right = self.ast_to_term(right);
                 let (param_name, typ) = match get_name_lam(bind) {
                     Ok((param_name, Some(typ))) => (param_name, typ),
                     _ => {
@@ -94,17 +93,18 @@ impl State {
                         return Err(());
                     }
                 };
-                let typ = self.ast_to_core(typ);
+                let typ = self.ast_to_term(typ);
 
                 Term::Arrow {
                     kind: ArrowKind::Value,
                     param_name,
                     ty: typ?,
                     body: right?,
-                }.into()
+                }
+                .into()
             }
             Ast::Arrow(AstArrowKind::Type, bind, right) => {
-                let right = self.ast_to_core(right);
+                let right = self.ast_to_term(right);
                 let (param_name, typ) = match get_name_pi(bind) {
                     Ok((param, typ)) => (param.unwrap_or("_".into()), typ),
                     Err(()) => {
@@ -112,69 +112,103 @@ impl State {
                         return Err(());
                     }
                 };
-                let typ = self.ast_to_core(typ);
+                let typ = self.ast_to_term(typ);
 
                 Term::Arrow {
                     kind: ArrowKind::Type,
                     param_name,
                     ty: typ?,
                     body: right?,
-                }.into()
+                }
+                .into()
             }
             Ast::TypeAnnotation(val, typ) => {
-                let val = self.ast_to_core(val);
-                let typ = self.ast_to_core(typ);
+                let val = self.ast_to_term(val);
+                let typ = self.ast_to_term(typ);
                 Term::TypeAnnotation(val?, typ?).into()
             }
             Ast::Literal(literal, _) => self.literal_to_core(literal).pipe(Term::Literal).into(),
             Ast::Let(bind, value, body) => {
                 let (name, typ) = destruct(get_name_lam(bind));
                 let typ = typ
-                    .map(|typ| typ.map(|typ| self.ast_to_core(typ)))
+                    .map(|typ| typ.map(|typ| self.ast_to_term(typ)))
                     .transpose()
                     .map(|x| x.and_then(|y| y))
                     .transpose();
-                let value = self.ast_to_core(value);
-                let body = self.ast_to_core(body);
+                let value = self.ast_to_term(value);
+                let body = self.ast_to_term(body);
                 Term::Let(name?, typ?, value?, body?).into()
             }
             Ast::Tuple(terms) => Term::Tuple(self.ast_slice_to_core(terms)?).into(),
             Ast::TupleType(terms) => Term::TupleType(self.ast_slice_to_core(terms)?).into(),
             Ast::Error => todo!(),
             Ast::Match(input, cases) => {
-                let input_term = self.ast_to_core(input)?;
+                let input_term = self.ast_to_term(input)?;
                 cases
                     .iter()
                     .map(|(pat, term)| {
                         let pat = self.ast_to_pattern(pat).map(Rc::new);
-                        let term = self.ast_to_core(term);
+                        let term = self.ast_to_term(term);
                         Ok((pat?, term?))
                     })
                     .collect::<Result<Vec<_>, _>>()?
                     .pipe(|cases| Term::Match(input_term, cases))
                     .pipe(Term::into)
-            },
+            }
         }
         .pipe(Ok)
     }
 
-    fn literal_to_core(&mut self, literal: &Literal) -> CoreLiteral {
+    fn literal_to_core(&mut self, literal: &Literal) -> TermLiteral {
         match literal {
-            Literal::String(s) => CoreLiteral::String(s.clone()),
+            Literal::String(s) => TermLiteral::String(s.clone()),
             Literal::Int(_) => todo!(),
-            Literal::Type => CoreLiteral::Type,
-            Literal::Prop => CoreLiteral::Prop,
+            Literal::Type => TermLiteral::Type,
+            Literal::Prop => TermLiteral::Prop,
         }
     }
 }
 
-pub fn ast_to_core(ast: &Ast) -> Result<PTerm, Vec<Error>> {
+pub fn ast_to_term(ast: &Ast) -> Result<PTerm, Vec<Error>> {
     let mut state = State::new();
-    let ret = state.ast_to_core(ast);
+    let ret = state.ast_to_term(ast);
 
     if let Ok(ret) = ret {
         Ok(ret)
     } else {
         Err(state.errors)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::ast_to_term;
+    use crate::parse::parse;
+    use crate::term::{Pattern as P, Term as T};
+    use indoc::indoc;
+
+    fn var_pattern(name: &'static str) -> P {
+        P::Var(name.into())
+    }
+
+    #[test]
+    fn it_works() {
+        let ast = parse(indoc! {"
+            match x with {
+                (a, b) => a
+            }
+        "})
+        .unwrap();
+
+        let term = T::Match(
+            T::Var("x".into()).into(),
+            vec![(
+                P::UnTuple(vec![var_pattern("a"), var_pattern("b")]).into(),
+                T::Var("a".into()).into(),
+            )],
+        )
+        .into_pterm();
+
+        assert_eq!(ast_to_term(&ast), Ok(term));
     }
 }
