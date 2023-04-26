@@ -1,7 +1,4 @@
-use std::fmt::Debug;
-use std::hash::Hash;
-
-pub trait YesNo: Debug + Clone + Copy + PartialEq + Eq + PartialOrd + Ord + Hash {
+pub trait YesNo {
     type If<Then, Else>;
     type Not: YesNo;
 }
@@ -18,16 +15,6 @@ pub enum No {}
 impl YesNo for No {
     type If<Then, Else> = Else;
     type Not = Yes;
-}
-
-impl No {
-    pub fn unreachable(self) -> ! {
-        match self {}
-    }
-
-    pub fn into_anything<T>(self) -> T {
-        match self {}
-    }
 }
 
 pub mod prelude {

@@ -1,6 +1,6 @@
 use crate::global::{with_variable, with_variables};
 use crate::name::Name;
-use crate::term::{Literal, PTerm, PTermReduced, Pattern, Term};
+use crate::term::{PTerm, Pattern, Term, Literal};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -47,11 +47,11 @@ pub fn substitute(term: &PTerm, to_substitute: &Name, replacement: &PTerm) -> PT
 
     match term.as_ref() {
         // Replace name.
-        Term::Var(_, name) if name == to_substitute => replacement.clone(),
+        Term::Var(name) if name == to_substitute => replacement.clone(),
         // Things that don't change.
-        Term::Var(..) | Term::Literal(_) => term.clone(),
+        Term::Var(_) | Term::Literal(_) => term.clone(),
         Term::Arrow { param_name, .. } if param_name == to_substitute => term.clone(),
-        Term::Let(_, name, _, _, _) if name == to_substitute => term.clone(),
+        Term::Let(name, _, _, _) if name == to_substitute => term.clone(),
         // Recurse.
         Term::Arrow {
             kind,
@@ -65,20 +65,20 @@ pub fn substitute(term: &PTerm, to_substitute: &Name, replacement: &PTerm) -> PT
             body: recurse(body),
         }
         .into(),
-        Term::Let(_, name, annotation, rhs, body) => Term::let_(
+        Term::Let(name, annotation, rhs, body) => Term::Let(
             name.clone(),
             annotation.as_ref().map(recurse),
             recurse(rhs),
             recurse(body),
         )
         .into(),
-        Term::Appl(_, left, right) => Term::appl(recurse(left), recurse(right)).into(),
-        Term::TypeAnnotation(_, left, right) => {
-            Term::type_annotation(recurse(left), recurse(right)).into()
+        Term::Appl(left, right) => Term::Appl(recurse(left), recurse(right)).into(),
+        Term::TypeAnnotation(left, right) => {
+            Term::TypeAnnotation(recurse(left), recurse(right)).into()
         }
         Term::Tuple(elements) => Term::Tuple(elements.iter().map(recurse).collect()).into(),
         Term::TupleType(elements) => Term::TupleType(elements.iter().map(recurse).collect()).into(),
-        Term::Match(_, input, cases) => Term::match_(
+        Term::Match(input, cases) => Term::Match(
             recurse(input),
             cases
                 .iter()
@@ -94,14 +94,15 @@ pub fn substitute(term: &PTerm, to_substitute: &Name, replacement: &PTerm) -> PT
     }
 }
 
-pub fn match_pattern(
-    pattern: &Pattern,
-    term: &PTermReduced,
-) -> Option<HashMap<Name, PTermReduced>> {
+pub fn match_pattern(pattern: &Pattern, term: &PTerm) -> Option<HashMap<Name, PTerm>> {
+    // Don't even try to match if the term is not reduced.
+    if !term.is_reduced() {
+        return None;
+    }
+
     match (pattern, term.as_ref()) {
         (Pattern::Var(name), _) => Some([(name.clone(), term.clone())].into()),
         (Pattern::UnTuple(element_patterns), Term::Tuple(elements)) => {
-            // Only match if the number of elements matches.
             if element_patterns.len() != elements.len() {
                 return None;
             }
@@ -112,6 +113,7 @@ pub fn match_pattern(
             }
             Some(result)
         }
+        (Pattern::UnTuple(_), _) => None,
         (Pattern::String(s), Term::Literal(Literal::String(s2))) => {
             if s == s2 {
                 Some(HashMap::new())
@@ -119,7 +121,6 @@ pub fn match_pattern(
                 None
             }
         }
-        (Pattern::UnTuple(_), _) => None,
         (Pattern::String(_), _) => None,
     }
 }
@@ -137,7 +138,7 @@ pub fn eval(term: &PTerm, vars: &mut Context) -> PTerm {
             body,
         } if name_is_bound(param_name, vars) => {
             let new_param_name = make_name_unique(param_name, vars);
-            let new_body = substitute(body, param_name, &Term::var(new_param_name.clone()).into());
+            let new_body = substitute(body, param_name, &Term::Var(new_param_name.clone()).into());
 
             let new_term = Rc::new(Arrow {
                 kind: *kind,
@@ -148,15 +149,15 @@ pub fn eval(term: &PTerm, vars: &mut Context) -> PTerm {
 
             eval(&new_term, vars)
         }
-        Let(_, name, annotation, rhs, body) if name_is_bound(name, vars) => {
+        Let(name, annotation, rhs, body) if name_is_bound(name, vars) => {
             let new_name = make_name_unique(name, vars);
-            let new_body = substitute(body, name, &Term::var(new_name.clone()).into());
+            let new_body = substitute(body, name, &Term::Var(new_name.clone()).into());
 
-            let new_term = Term::let_(new_name, annotation.clone(), rhs.clone(), new_body).into();
+            let new_term = Let(new_name, annotation.clone(), rhs.clone(), new_body).into();
             eval(&new_term, vars)
         }
-        Var(_, var) => vars.get(var).cloned().unwrap_or(term.clone()),
-        Appl(_, lhs, rhs) => {
+        Var(var) => vars.get(var).cloned().unwrap_or(term.clone()),
+        Appl(lhs, rhs) => {
             let lhs = eval(lhs, vars);
             let rhs = eval(rhs, vars);
 
@@ -168,7 +169,7 @@ pub fn eval(term: &PTerm, vars: &mut Context) -> PTerm {
                 return with_variable!(vars, (param_name, rhs), { eval(body, vars) });
             }
 
-            if let Appl(_, func, arg1) = lhs.as_ref() {
+            if let Appl(func, arg1) = lhs.as_ref() {
                 use crate::term::Literal as L;
                 if let (Literal(L::StringAppend), Literal(L::String(s1)), Literal(L::String(s2))) =
                     (func.as_ref(), arg1.as_ref(), rhs.as_ref())
@@ -177,7 +178,7 @@ pub fn eval(term: &PTerm, vars: &mut Context) -> PTerm {
                 }
             }
 
-            Term::appl(lhs, rhs).into()
+            Appl(lhs, rhs).into()
         }
         Arrow {
             kind: binder,
@@ -190,8 +191,8 @@ pub fn eval(term: &PTerm, vars: &mut Context) -> PTerm {
 
             // meu-reduction
             // (x => f x) = f
-            if let Appl(_, func, arg) = body.as_ref() {
-                if let Var(_, arg_var) = arg.as_ref() {
+            if let Appl(func, arg) = body.as_ref() {
+                if let Var(arg_var) = arg.as_ref() {
                     if arg_var == param_name {
                         return func.clone();
                     }
@@ -206,34 +207,28 @@ pub fn eval(term: &PTerm, vars: &mut Context) -> PTerm {
             }
             .into()
         }
-        Let(_, name, _, rhs, body) => {
+        Let(name, _, rhs, body) => {
             let rhs = eval(rhs, vars);
 
             with_variable!(vars, (name, rhs), { eval(body, vars) })
         }
-        TypeAnnotation(_, term, _) => eval(term, vars),
+        TypeAnnotation(term, _) => eval(term, vars),
         Literal(_) => term.clone(),
         Tuple(elements) => Tuple(elements.iter().map(|e| eval(e, vars)).collect()).into(),
         TupleType(elements) => TupleType(elements.iter().map(|e| eval(e, vars)).collect()).into(),
-        Match(_, input, cases) => {
+        Match(input, cases) => {
             let input = eval(input, vars);
-
-            if let Some(input_reduced) = input.is_reduced().map(Term::into_pterm) {
-                cases
-                    .iter()
-                    .find_map(|(pattern, case)| {
-                        match_pattern(pattern, &input_reduced).map(|bound_names| {
-                            let bound_names =
-                                bound_names.into_iter().map(|(bound_name, bound_term)| {
-                                    (bound_name, bound_term.to_not_reduced().into())
-                                });
-                            with_variables!(vars, bound_names, { eval(case, vars) })
+            cases
+                .iter()
+                .find_map(|(pattern, case)| {
+                    match_pattern(pattern, &input)
+                    .map(|bound_names| {
+                        with_variables!(vars, bound_names, {
+                            eval(case, vars)
                         })
                     })
-                    .unwrap_or_else(|| Term::match_(input, cases.clone()).into())
-            } else {
-                Term::match_(input, cases.clone()).into()
-            }
+                })
+                .unwrap_or_else(|| Match(input, cases.clone()).into())
         }
     }
 }
