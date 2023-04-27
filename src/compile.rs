@@ -306,7 +306,7 @@ fn closure_drop_function(
     }
 }
 
-fn compile_clone(var_c_name: Name, var_n_type: &Term) -> c::Block {
+fn compile_clone(var_c_name: &Name, var_n_type: &Term) -> c::Block {
     match var_n_type {
         Term::Arrow {
             kind: ArrowKind::Type,
@@ -437,7 +437,7 @@ fn compile_tuple_declaration(c: &Tuple, con: &mut Context) -> [c::TopLevelDeclar
 }
 
 pub fn compile(term: &PTerm) -> c::Program {
-    let term_type = infer(&term, &mut Default::default()).expect("Still no error handling...");
+    let term_type = infer(term, &mut Default::default()).expect("Still no error handling...");
 
     let mut context = Context::default();
 
@@ -529,7 +529,7 @@ fn compile_pattern(pattern: &Pattern, input_var: &ExprRet, con: &mut Context) ->
         Pattern::Var(name) => CompiledPattern {
             prelude: vec![],
             bindings: vec![(name.clone(), input_var.clone())],
-            cond: "true".var().into(),
+            cond: "true".var(),
         },
         Pattern::UnTuple(patterns) => {
             let element_types = match input_var.n_type.as_ref() {
@@ -557,7 +557,7 @@ fn compile_pattern(pattern: &Pattern, input_var: &ExprRet, con: &mut Context) ->
                         .var()
                         .dot(field_name)
                         .variable(field_var_name.clone(), field_c_type.clone());
-                    let clone_field = compile_clone(field_var_name.clone(), field_n_type);
+                    let clone_field = compile_clone(&field_var_name, field_n_type);
 
                     prelude.push(field_var_decl);
                     prelude.extend(clone_field);
@@ -601,15 +601,15 @@ fn compile_pattern(pattern: &Pattern, input_var: &ExprRet, con: &mut Context) ->
 // TODO: Add `compile_clone` calls where appropriate. Where should they be added?
 //       - When a name returned from a `compile_expr` call is used more than once.
 fn compile_expr(term: &PTerm, con: &mut Context) -> (c::Block, ExprRet) {
-    let term = normalize(&term);
+    let term = normalize(term);
     let term_type = infer(&term, &mut con.n_vars).unwrap();
     let term_type_expr: c::PTypeExpr = compile_type_expr(&term_type, con).unwrap().into();
 
     let (prelude, out_name) = match term.as_ref() {
         Term::Var(name) => {
-            let (_, var_c_name) = con.c_vars[name].clone();
+            let (_, var_c_name) = &con.c_vars[name];
             let var_type = con.n_vars[name].clone();
-            (compile_clone(var_c_name.clone(), &var_type), var_c_name)
+            (compile_clone(var_c_name, &var_type), var_c_name.clone())
         }
         Term::Appl(func, arg) =>
         // Should first save the closure pointer (lhs) in a variable,
@@ -823,7 +823,7 @@ fn compile_expr(term: &PTerm, con: &mut Context) -> (c::Block, ExprRet) {
                         .extend_pipe(drop_vars)
                         .pipe(Some)
                 })
-                .unwrap_or_else(Vec::new);
+                .unwrap_or_default();
 
             let drop_input = compile_drop(input_var.c_name.clone(), &input_var.n_type, con);
 
@@ -838,7 +838,7 @@ fn compile_expr(term: &PTerm, con: &mut Context) -> (c::Block, ExprRet) {
     (
         prelude,
         ExprRet {
-            c_name: out_name.clone(),
+            c_name: out_name,
             c_type: term_type_expr,
             n_type: term_type,
         },

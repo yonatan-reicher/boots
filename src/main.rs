@@ -16,7 +16,7 @@ use cli::{parse_args, Action, Cli};
 use std::fs;
 use std::io::{self, Result as IORes};
 
-use crate::term::{ArrowKind, PTerm, Term, Literal};
+use crate::term::{ArrowKind, Literal, PTerm, Term};
 
 mod repl {
     use super::*;
@@ -130,14 +130,3 @@ fn main() -> IORes<()> {
     }
 }
 
-/*
-fn main() -> io::Result<()> {
-    let source = read_stdin()?;
-    let output = dbg!(parse::parse(&source).expect("Failed to parse"));
-    let typ = dbg!(output.infer_type().expect("Failed to infer type"));
-    let c = dbg!(compile::compile(&output));
-    let code = c.to_code();
-    println!("{}", code);
-    Ok(())
-}
-*/

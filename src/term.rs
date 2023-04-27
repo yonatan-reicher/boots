@@ -199,7 +199,7 @@ impl Term {
             Term::Tuple(elements) | Term::TupleType(elements) => {
                 elements.iter().all(|e| e.is_reduced())
             }
-            Term::Arrow { .. } => true, // TODO: Is this correct? Are all functions reduced?
+            Term::Arrow { ty, .. } => ty.is_reduced(),
             Term::Appl(_, _) => false,
             Term::TypeAnnotation(_, _) => false,
             Term::Var(_) => false,

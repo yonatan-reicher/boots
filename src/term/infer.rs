@@ -59,7 +59,7 @@ impl<'a> State<'a> {
                 }
 
                 element_types
-                    .into_iter()
+                    .iter()
                     .zip(pats)
                     .map(|(element_type, pat)| self.infer_pattern(pat, element_type))
                     .collect::<Result<Vec<_>, _>>()?
@@ -192,7 +192,7 @@ impl<'a> State<'a> {
                     })
                     .collect::<Result<Vec<PTerm>, _>>()?;
 
-                if case_types.len() == 0 {
+                if case_types.is_empty() {
                     self.errors.push(Error::EmptyMatch);
                     return Err(());
                 }

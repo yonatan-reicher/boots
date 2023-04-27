@@ -146,7 +146,7 @@ impl MultilineCode for Program {
             })),
             I::line_str(""),
             I::many(seperate_with_newlines(start)),
-            I::many(seperate_with_newlines(end.into_iter().filter_map(|x| x))),
+            I::many(seperate_with_newlines(end.into_iter().flatten())),
         ])
     }
 }
