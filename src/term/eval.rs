@@ -1,113 +1,111 @@
-use crate::global::{with_variable, with_variables};
-use crate::name::Name;
-use crate::term::{PTerm, Pattern, Term, Literal};
-use std::collections::HashMap;
-use std::rc::Rc;
+use crate::global::{with_variable, with_variables, ExtendPipe, Withable};
+use crate::term::{DeBruijn, Literal, PTerm, Pattern, Term};
 
-pub type Context = HashMap<Name, PTerm>;
+pub type Context = Vec<Option<PTerm>>;
 
+/*
 /// Reduce the term to a cannonical form.
 pub fn normalize(term: &PTerm) -> PTerm {
     eval(term, &mut Context::default())
 }
+*/
 
-/// Check if the given name is a free variable in a bound variable.
-pub fn name_is_bound(name: &Name, vars: &Context) -> bool {
-    for value in vars.values() {
-        if value.free_vars().contains(name) {
-            return true;
+pub fn children(term: &Term) -> Vec<PTerm> {
+    match term {
+        Term::Appl(lhs, rhs) | Term::TypeAnnotation(lhs, rhs) => vec![lhs.clone(), rhs.clone()],
+        Term::Arrow { ty, body, .. } => vec![ty.clone(), body.clone()],
+        Term::Var(_) | Term::Literal(_) => vec![],
+        Term::Let(annot, rhs, ret) => vec![rhs.clone(), ret.clone()].extend_pipe(annot.clone()),
+        Term::Tuple(elements) | Term::TupleType(elements) => elements.clone(),
+        Term::Match(input, cases) => {
+            vec![input.clone()].extend_pipe(cases.iter().map(|x| x.1.clone()))
         }
     }
-    false
 }
 
-pub fn make_name_unique(name: &Name, vars: &Context) -> Name {
-    let mut name = name.clone();
-    while vars.contains_key(&name) || name_is_bound(&name, vars) {
-        name = format!("{name}_").into();
-    }
-    name
-}
-
-fn substitute_case(
-    pattern: &Pattern,
-    case: &PTerm,
-    to_substitute: &Name,
-    replacement: &PTerm,
-) -> PTerm {
-    if pattern.free_vars().contains(to_substitute) {
-        case.clone()
-    } else {
-        substitute(case, to_substitute, replacement)
+pub fn children_mut(term: &mut Term) -> Vec<&mut PTerm> {
+    match term {
+        Term::Appl(lhs, rhs) | Term::TypeAnnotation(lhs, rhs) => vec![lhs, rhs],
+        Term::Arrow { ty, body, .. } => vec![ty, body],
+        Term::Var(_) | Term::Literal(_) => vec![],
+        Term::Let(annot, rhs, ret) => vec![rhs, ret].extend_pipe(annot.as_mut()),
+        Term::Tuple(elements) | Term::TupleType(elements) => elements.iter_mut().collect(),
+        Term::Match(input, cases) => vec![input].extend_pipe(cases.iter_mut().map(|x| &mut x.1)),
     }
 }
 
-pub fn substitute(term: &PTerm, to_substitute: &Name, replacement: &PTerm) -> PTerm {
-    let recurse = |x| substitute(x, to_substitute, replacement);
-
+pub fn substitute(term: &PTerm, de_bruijn: DeBruijn, arg: &PTerm) -> PTerm {
     match term.as_ref() {
-        // Replace name.
-        Term::Var(name) if name == to_substitute => replacement.clone(),
-        // Things that don't change.
-        Term::Var(_) | Term::Literal(_) => term.clone(),
-        Term::Arrow { param_name, .. } if param_name == to_substitute => term.clone(),
-        Term::Let(name, _, _, _) if name == to_substitute => term.clone(),
-        // Recurse.
-        Term::Arrow {
-            kind,
-            param_name,
-            ty,
-            body,
-        } => Term::Arrow {
-            kind: *kind,
-            param_name: param_name.clone(),
-            ty: recurse(ty),
-            body: recurse(body),
+        // If the variable is the one we are looking for, switch it. If it is
+        // a variable defined before, push it up the stack. If it is an inner
+        // variable leave it be.
+        Term::Var(var_de_bruijn) => {
+            use std::cmp::Ordering::*;
+            match var_de_bruijn.cmp(&de_bruijn) {
+                Equal => arg.clone(),
+                Less => term.clone(),
+                Greater => Term::Var(var_de_bruijn.dec()).into(),
+            }
+        }
+        // We are defining a variable, so the variable to substitute gets pushed
+        // down.
+        Term::Arrow { kind, ty, body } => Term::Arrow {
+            kind: kind.clone(),
+            ty: substitute(ty, de_bruijn, arg),
+            body: substitute(body, de_bruijn.inc(), arg),
         }
         .into(),
-        Term::Let(name, annotation, rhs, body) => Term::Let(
-            name.clone(),
-            annotation.as_ref().map(recurse),
-            recurse(rhs),
-            recurse(body),
+        Term::Let(annot, rhs, ret) => Term::Let(
+            annot
+                .as_ref()
+                .map(|annot| substitute(annot, de_bruijn, arg)),
+            substitute(rhs, de_bruijn, arg),
+            substitute(ret, de_bruijn.inc(), arg),
         )
         .into(),
-        Term::Appl(left, right) => Term::Appl(recurse(left), recurse(right)).into(),
-        Term::TypeAnnotation(left, right) => {
-            Term::TypeAnnotation(recurse(left), recurse(right)).into()
-        }
-        Term::Tuple(elements) => Term::Tuple(elements.iter().map(recurse).collect()).into(),
-        Term::TupleType(elements) => Term::TupleType(elements.iter().map(recurse).collect()).into(),
-        Term::Match(input, cases) => Term::Match(
-            recurse(input),
-            cases
+        Term::Appl(left, right) => Term::Appl(
+            substitute(left, de_bruijn, arg),
+            substitute(right, de_bruijn, arg),
+        )
+        .into(),
+        Term::TypeAnnotation(left, right) => Term::TypeAnnotation(
+            substitute(left, de_bruijn, arg),
+            substitute(right, de_bruijn, arg),
+        )
+        .into(),
+        Term::Tuple(elements) => Term::Tuple(
+            elements
                 .iter()
-                .map(|(pat, case)| {
-                    (
-                        pat.clone(),
-                        substitute_case(pat, case, to_substitute, replacement),
-                    )
-                })
+                .map(|x| substitute(x, de_bruijn, arg))
                 .collect(),
         )
         .into(),
+        Term::TupleType(elements) => Term::TupleType(
+            elements
+                .iter()
+                .map(|x| substitute(x, de_bruijn, arg))
+                .collect(),
+        )
+        .into(),
+        Term::Match(_, _) => todo!(),
+        Term::Literal(_) => term.clone(),
     }
 }
 
-pub fn match_pattern(pattern: &Pattern, term: &PTerm) -> Option<HashMap<Name, PTerm>> {
+pub fn match_pattern(pattern: &Pattern, term: &PTerm) -> Option<Vec<PTerm>> {
     // Don't even try to match if the term is not reduced.
     if !term.is_reduced() {
         return None;
     }
 
     match (pattern, term.as_ref()) {
-        (Pattern::Var(name), _) => Some([(name.clone(), term.clone())].into()),
+        (Pattern::Var, _) => Some(vec![term.clone()]),
         (Pattern::UnTuple(element_patterns), Term::Tuple(elements)) => {
             if element_patterns.len() != elements.len() {
                 return None;
             }
 
-            let mut result = HashMap::new();
+            let mut result = vec![];
             for (pattern, element) in element_patterns.iter().zip(elements) {
                 result.extend(match_pattern(pattern, element)?);
             }
@@ -116,7 +114,7 @@ pub fn match_pattern(pattern: &Pattern, term: &PTerm) -> Option<HashMap<Name, PT
         (Pattern::UnTuple(_), _) => None,
         (Pattern::String(s), Term::Literal(Literal::String(s2))) => {
             if s == s2 {
-                Some(HashMap::new())
+                Some(vec![])
             } else {
                 None
             }
@@ -128,47 +126,21 @@ pub fn match_pattern(pattern: &Pattern, term: &PTerm) -> Option<HashMap<Name, PT
 pub fn eval(term: &PTerm, vars: &mut Context) -> PTerm {
     use Term::*;
     match term.as_ref() {
-        // Bound name bug:
-        // We don't want (y => x => y) x to reduce to (x => x), but to
-        // something along the lines of (z => x)
-        Arrow {
-            kind,
-            param_name,
-            ty,
-            body,
-        } if name_is_bound(param_name, vars) => {
-            let new_param_name = make_name_unique(param_name, vars);
-            let new_body = substitute(body, param_name, &Term::Var(new_param_name.clone()).into());
-
-            let new_term = Rc::new(Arrow {
-                kind: *kind,
-                param_name: new_param_name,
-                ty: ty.clone(),
-                body: new_body,
-            });
-
-            eval(&new_term, vars)
-        }
-        Let(name, annotation, rhs, body) if name_is_bound(name, vars) => {
-            let new_name = make_name_unique(name, vars);
-            let new_body = substitute(body, name, &Term::Var(new_name.clone()).into());
-
-            let new_term = Let(new_name, annotation.clone(), rhs.clone(), new_body).into();
-            eval(&new_term, vars)
-        }
-        Var(var) => vars.get(var).cloned().unwrap_or(term.clone()),
+        Var(de_bruijn) => de_bruijn
+            .index(vars)
+            .cloned()
+            .unwrap()
+            .unwrap_or(term.clone()),
         Appl(lhs, rhs) => {
             let lhs = eval(lhs, vars);
             let rhs = eval(rhs, vars);
 
-            if let Arrow {
-                body, param_name, ..
-            } = lhs.as_ref()
-            {
-                // Substitute the parameter inside the body and then eval again.
-                return with_variable!(vars, (param_name, rhs), { eval(body, vars) });
+            // Function application.
+            if let Arrow { body, .. } = lhs.as_ref() {
+                return with_variable!(vars, Some(rhs), { eval(body, vars) });
             }
 
+            // `string-append` function.
             if let Appl(func, arg1) = lhs.as_ref() {
                 use crate::term::Literal as L;
                 if let (Literal(L::StringAppend), Literal(L::String(s1)), Literal(L::String(s2))) =
@@ -182,35 +154,35 @@ pub fn eval(term: &PTerm, vars: &mut Context) -> PTerm {
         }
         Arrow {
             kind: binder,
-            param_name,
             ty,
             body,
         } => {
             let ty = eval(ty, vars);
-            let body = eval(body, vars);
+            let body = with_variable!(vars, None, { eval(body, vars) });
 
             // meu-reduction
-            // (x => f x) = f
+            // (x => f x) = f       (when x is not free in f)
             if let Appl(func, arg) = body.as_ref() {
-                if let Var(arg_var) = arg.as_ref() {
-                    if arg_var == param_name {
-                        return func.clone();
+                if let Var(de_bruijn) = arg.as_ref() {
+                    if !func.free_vars().contains(&DeBruijn::TOP) && *de_bruijn == DeBruijn::TOP {
+                        // Use substitute to get rid of the top-most variable.
+                        // The third argument will be ignored because the variable is not free.
+                        return substitute(func, DeBruijn::TOP, &ty);
                     }
                 }
             }
 
             Arrow {
                 kind: *binder,
-                param_name: param_name.clone(),
                 ty,
                 body,
             }
             .into()
         }
-        Let(name, _, rhs, body) => {
+        Let(_, rhs, body) => {
             let rhs = eval(rhs, vars);
 
-            with_variable!(vars, (name, rhs), { eval(body, vars) })
+            with_variable!(vars, Some(rhs), { eval(body, vars) })
         }
         TypeAnnotation(term, _) => eval(term, vars),
         Literal(_) => term.clone(),
@@ -221,9 +193,9 @@ pub fn eval(term: &PTerm, vars: &mut Context) -> PTerm {
             cases
                 .iter()
                 .find_map(|(pattern, case)| {
-                    match_pattern(pattern, &input)
-                    .map(|bound_names| {
-                        with_variables!(vars, bound_names, {
+                    // TODO: Reduce cases that are not matched.
+                    match_pattern(pattern, &input).map(|bound_names| {
+                        with_variables!(vars, bound_names.into_iter().map(Some), {
                             eval(case, vars)
                         })
                     })

@@ -1,14 +1,13 @@
-use std::collections::HashMap;
+use crate::global::{with_variable, with_variables, Pipe, Withable};
+use crate::term::{substitute, ArrowKind, Literal, PTerm, Pattern, Term};
 
-use crate::term::{normalize, substitute, ArrowKind, Literal, PTerm, Term, Pattern};
-use crate::global::{with_variable, with_variables, Pipe};
-use crate::name::Name;
+use super::DeBruijn;
 
-pub type Context = HashMap<Name, PTerm>;
+pub type Context = Vec<PTerm>;
 
 #[derive(Debug)]
 pub enum Error {
-    VariableNotFound(Name),
+    VariableNotFound,
     NotApplicable,
     ArgumentTypeDoesntMatch,
     WrongTypeAnnotation,
@@ -41,21 +40,21 @@ struct State<'a> {
 }
 
 impl<'a> State<'a> {
-    pub fn infer_pattern(&mut self, pat: &Pattern, input_type: &PTerm) -> Result<Vec<(Name, PTerm)>, ()> {
+    pub fn infer_pattern(&mut self, pat: &Pattern, input_type: &PTerm) -> Result<Vec<PTerm>, ()> {
         match pat {
-            Pattern::Var(name) => Ok(vec![(name.clone(), input_type.clone())]),
+            Pattern::Var => Ok(vec![input_type.clone()]),
             Pattern::UnTuple(pats) => {
                 let element_types = match input_type.as_ref() {
                     Term::TupleType(element_types) => element_types,
                     _ => {
                         self.errors.push(Error::CantUnTupleNonTuple);
-                        return Err(())
+                        return Err(());
                     }
                 };
 
                 if element_types.len() != pats.len() {
                     self.errors.push(Error::UnTuplePatternCountMismatch);
-                    return Err(())
+                    return Err(());
                 }
 
                 element_types
@@ -70,8 +69,9 @@ impl<'a> State<'a> {
             }
             Pattern::String(_) => {
                 if !matches!(input_type.as_ref(), Term::Literal(Literal::Str)) {
-                    self.errors.push(Error::StringPatternWrongType(input_type.clone()));
-                    return Err(())
+                    self.errors
+                        .push(Error::StringPatternWrongType(input_type.clone()));
+                    return Err(());
                 }
 
                 Ok(vec![])
@@ -81,11 +81,10 @@ impl<'a> State<'a> {
 
     pub fn infer(&mut self, term: &PTerm) -> Result<PTerm, ()> {
         match term.as_ref() {
-            Term::Var(name) => self
-                .context
-                .get(name)
+            Term::Var(de_bruijn) => de_bruijn
+                .index(&self.context)
                 .cloned()
-                .ok_or_else(|| self.errors.push(Error::VariableNotFound(name.clone()))),
+                .ok_or_else(|| self.errors.push(Error::VariableNotFound)),
             Term::Appl(lhs, rhs) => {
                 let lhs_type = self.infer(lhs);
                 let rhs_type = self.infer(rhs);
@@ -93,57 +92,45 @@ impl<'a> State<'a> {
                 let rhs_type = rhs_type?;
 
                 // Destruct the left hand side.
-                let (param_name, param_ty, body) = if let Term::Arrow {
-                    kind: ArrowKind::Type,
-                    param_name,
-                    ty,
-                    body,
-                } = lhs_type.as_ref()
-                {
-                    (param_name, ty, body)
-                } else {
+                let Term::Arrow { kind: ArrowKind::Type, ty: param_ty, body } = lhs_type.as_ref() else {
                     self.errors.push(Error::NotApplicable);
-                    Err(())?
+                    return Err(());
                 };
 
                 if param_ty != &rhs_type {
                     self.errors.push(Error::ArgumentTypeDoesntMatch);
                 }
-                
-                Ok(substitute(body, param_name, rhs))
+
+                Ok(substitute(body, DeBruijn::TOP, rhs))
             }
             Term::Arrow {
                 kind: ArrowKind::Value,
-                param_name,
                 ty,
                 body,
             } => {
                 // Get the type of the body.
-                let body_type =
-                    with_variable!(self.context, (param_name, ty.clone()), { self.infer(body) })?;
+                let body_type = with_variable!(self.context, ty.clone(), { self.infer(body) })?;
+
                 // The lambda's type is a pi type.
                 let lam_type = Term::Arrow {
                     kind: ArrowKind::Type,
-                    param_name: param_name.clone(),
                     ty: ty.clone(),
                     body: body_type,
                 }
                 .into();
                 // Make sure this binder type checks.
                 self.infer(&lam_type)?;
-                Ok(normalize(&lam_type))
+                Ok(lam_type)
             }
             Term::Arrow {
                 kind: ArrowKind::Type,
-                param_name,
                 ty,
                 body,
             } => {
                 // Check that `ty`'s type could be infered.
                 self.infer(ty)?;
                 // Get the type of the body.
-                let body_type =
-                    with_variable!(self.context, (param_name, ty.clone()), { self.infer(body) })?;
+                let body_type = with_variable!(self.context, ty.clone(), { self.infer(body) })?;
                 // The pi binder's type is the type of the body.
                 Ok(body_type)
             }
@@ -158,7 +145,7 @@ impl<'a> State<'a> {
                 Ok(term_type)
             }
             Term::Literal(l) => Self::literal_type(l).pipe(Ok),
-            Term::Let(name, annotation, rhs, body) => {
+            Term::Let(annotation, rhs, body) => {
                 let rhs_type = self.infer(rhs);
 
                 // Check the type annotation.
@@ -169,7 +156,7 @@ impl<'a> State<'a> {
                 }
 
                 let rhs_type = annotation.clone().map(Ok).unwrap_or(rhs_type)?;
-                with_variable!(self.context, (name, rhs_type), { self.infer(body) })
+                with_variable!(self.context, rhs_type, { self.infer(body) })
             }
             Term::Tuple(elements) => {
                 let element_types = elements
@@ -181,11 +168,11 @@ impl<'a> State<'a> {
             Term::TupleType(_) => Ok(Literal::Type.pipe(Term::Literal).into()),
             Term::Match(input, cases) => {
                 let input_type = self.infer(input)?;
-                let case_types : Vec<PTerm> = cases
+                let case_types: Vec<PTerm> = cases
                     .iter()
                     .map(|(pattern, case)| {
-                        let binding_types = self.infer_pattern(pattern, &input_type)?;
-                        let case_type = with_variables!(self.context, binding_types, {
+                        let pattern_variable_types = self.infer_pattern(pattern, &input_type)?;
+                        let case_type = with_variables!(self.context, pattern_variable_types, {
                             self.infer(case)?
                         });
                         Ok(case_type)
@@ -202,7 +189,7 @@ impl<'a> State<'a> {
                 }
 
                 Ok(case_types[0].clone())
-            },
+            }
         }
     }
 
@@ -214,11 +201,9 @@ impl<'a> State<'a> {
             Literal::String(_) => Literal::Str.pipe(Term::Literal).into(),
             Literal::StringAppend => Term::Arrow {
                 kind: ArrowKind::Type,
-                param_name: "s1".into(),
                 ty: Literal::Str.into(),
                 body: Term::Arrow {
                     kind: ArrowKind::Type,
-                    param_name: "s2".into(),
                     ty: Literal::Str.into(),
                     body: Literal::Str.into(),
                 }

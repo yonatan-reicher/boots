@@ -14,7 +14,11 @@ pub struct Cli {
 
 #[derive(Subcommand)]
 pub enum Action {
-    Eval { filename: Option<PathBuf> },
+    Eval {
+        filename: Option<PathBuf>, 
+        #[arg(short, long)]
+        no_typecheck: bool,
+    },
     Compile { filename: PathBuf },
 }
 

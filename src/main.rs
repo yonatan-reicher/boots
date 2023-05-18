@@ -67,11 +67,9 @@ fn main() -> IORes<()> {
         "string-append".into(),
         Term::Arrow {
             kind: ArrowKind::Type,
-            param_name: "_".into(),
             ty: Literal::Str.into(),
             body: Term::Arrow {
                 kind: ArrowKind::Type,
-                param_name: "_".into(),
                 ty: Literal::Str.into(),
                 body: Literal::Str.into(),
             }
@@ -84,7 +82,7 @@ fn main() -> IORes<()> {
     engine.add_variable("str".into(), Literal::Type.into(), Literal::Str.into());
 
     match action {
-        Action::Eval { filename: None } => {
+        Action::Eval { filename: None, no_typecheck } => {
             // Begin a repl!
             repl::run(|source| {
                 if source == "q" {
@@ -93,11 +91,13 @@ fn main() -> IORes<()> {
                     return Ok(true);
                 }
                 let ast = parse::parse(source).expect("Failed to parse");
-                let expr: PTerm = ast_to_term::ast_to_term(&ast).unwrap();
-                let typ = engine
-                    .infer_type(expr.clone())
-                    .expect("Failed to infer type");
-                println!("Type is {typ}");
+                let expr = engine.ast_to_term(&ast).unwrap();
+                if !no_typecheck {
+                    let typ = engine
+                        .infer_type(expr.clone())
+                        .expect("Failed to infer type");
+                    println!("Type is {typ}");
+                }
                 let evaluated = engine.eval(expr);
                 println!("{evaluated}");
                 Ok(true)
@@ -105,21 +105,23 @@ fn main() -> IORes<()> {
         }
         Action::Eval {
             filename: Some(filename),
+            no_typecheck,
         } => {
             let source = fs::read_to_string(filename)?;
             let ast = parse::parse(&source).unwrap();
-            let expr: PTerm = ast_to_term::ast_to_term(&ast).unwrap();
-            let ty = engine.infer_type(expr.clone()).unwrap();
+            let expr = engine.ast_to_term(&ast).unwrap();
+            if !no_typecheck {
+                let ty = engine.infer_type(expr.clone()).unwrap();
+                println!("Type is {ty}");
+            }
             let evaluated = engine.eval(expr);
             println!("{evaluated}");
-            println!("Is of type:");
-            println!("{ty}");
             Ok(())
         }
         Action::Compile { filename } => {
             let source = fs::read_to_string(filename)?;
             let ast = parse::parse(&source).unwrap();
-            let expr: PTerm = ast_to_term::ast_to_term(&ast).unwrap();
+            let expr: PTerm = engine.ast_to_term(&ast).unwrap();
             let _ty = engine.infer_type(expr.clone()).unwrap();
             let evaluated = engine.eval(expr);
             println!("{evaluated}");

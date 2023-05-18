@@ -2,7 +2,7 @@ use crate::c;
 use crate::c::combine_traits::*;
 use crate::global::*;
 use crate::name::Name;
-use crate::term::{infer, normalize, ArrowKind, Literal, PTerm, Pattern, Term, TypeContext};
+use crate::term::{infer, ArrowKind, Literal, PTerm, Pattern, Term, TypeContext};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -69,8 +69,7 @@ struct ExprRet {
     n_type: PTerm,
 }
 
-/// A mapping from a C-Var name to a C-Var type and it's N-Var name.
-type CVars = HashMap<Name, (c::PTypeExpr, Name)>;
+type CVars = Vec<(c::PTypeExpr, Name)>;
 
 type Closures = Vec<Closure>;
 
@@ -99,7 +98,7 @@ struct Tuple {
 #[derive(Debug, Default)]
 struct Context {
     c_vars: CVars,
-    n_vars: TypeContext,
+    types: TypeContext,
     closures: Closures,
     function_c_types: FunctionCTypes,
     tuple_c_types: TupleCTypes,
@@ -333,7 +332,7 @@ fn compile_drop(var_c_name: Name, var_type: &Term, con: &Context) -> c::Block {
 
             vec![tuple.drop_name.clone().var().call([var]).stmt()]
         }
-        _ => todo!(),
+        _ => vec![],
     }
 }
 
@@ -437,6 +436,7 @@ fn compile_tuple_declaration(c: &Tuple, con: &mut Context) -> [c::TopLevelDeclar
 }
 
 pub fn compile(term: &PTerm) -> c::Program {
+    dbg!(term);
     let term_type = infer(term, &mut Default::default()).expect("Still no error handling...");
 
     let mut context = Context::default();
@@ -517,7 +517,7 @@ fn unzip3<T, U, V>(i: impl IntoIterator<Item = (T, U, V)>) -> (Vec<T>, Vec<U>, V
 struct CompiledPattern {
     prelude: c::Block,
     cond: c::Expr,
-    bindings: Vec<(Name, ExprRet)>,
+    bindings: Vec<ExprRet>,
 }
 
 fn compile_string_eq(left: c::Expr, right: c::Expr) -> c::Expr {
@@ -526,9 +526,9 @@ fn compile_string_eq(left: c::Expr, right: c::Expr) -> c::Expr {
 
 fn compile_pattern(pattern: &Pattern, input_var: &ExprRet, con: &mut Context) -> CompiledPattern {
     match pattern {
-        Pattern::Var(name) => CompiledPattern {
+        Pattern::Var => CompiledPattern {
             prelude: vec![],
-            bindings: vec![(name.clone(), input_var.clone())],
+            bindings: vec![input_var.clone()],
             cond: "true".var(),
         },
         Pattern::UnTuple(patterns) => {
@@ -588,27 +588,24 @@ fn compile_pattern(pattern: &Pattern, input_var: &ExprRet, con: &mut Context) ->
                 bindings: flatten(bindings),
             }
         }
-        Pattern::String(s) => {
-            CompiledPattern {
-                prelude: vec![],
-                bindings: vec![],
-                cond: compile_string_eq(input_var.c_name.clone().var(), s.clone().literal()),
-            }
-        }
+        Pattern::String(s) => CompiledPattern {
+            prelude: vec![],
+            bindings: vec![],
+            cond: compile_string_eq(input_var.c_name.clone().var(), s.clone().literal()),
+        },
     }
 }
 
 // TODO: Add `compile_clone` calls where appropriate. Where should they be added?
 //       - When a name returned from a `compile_expr` call is used more than once.
 fn compile_expr(term: &PTerm, con: &mut Context) -> (c::Block, ExprRet) {
-    let term = normalize(term);
-    let term_type = infer(&term, &mut con.n_vars).unwrap();
+    let term_type = infer(&term, &mut con.types).unwrap();
     let term_type_expr: c::PTypeExpr = compile_type_expr(&term_type, con).unwrap().into();
 
     let (prelude, out_name) = match term.as_ref() {
-        Term::Var(name) => {
-            let (_, var_c_name) = &con.c_vars[name];
-            let var_type = con.n_vars[name].clone();
+        Term::Var(de_bruijn) => {
+            let (_, var_c_name) = de_bruijn.index(&con.c_vars).unwrap();
+            let var_type = de_bruijn.index(&con.types).unwrap().clone();
             (compile_clone(var_c_name, &var_type), var_c_name.clone())
         }
         Term::Appl(func, arg) =>
@@ -641,7 +638,6 @@ fn compile_expr(term: &PTerm, con: &mut Context) -> (c::Block, ExprRet) {
         }
         Term::Arrow {
             kind: ArrowKind::Value,
-            param_name,
             ty,
             body,
         } => {
@@ -657,19 +653,17 @@ fn compile_expr(term: &PTerm, con: &mut Context) -> (c::Block, ExprRet) {
 
             // Compile the body to an expression.
             let param_c_name = con.name_gen.next(NameOptions::Var);
-            let (body_prelude, body_ret) = with_variable!(con.n_vars, (param_name, ty.clone()), {
-                with_variable!(
-                    con.c_vars,
-                    (param_name, (param_c_ty.clone(), param_c_name.clone())),
-                    { compile_expr(body, con) }
-                )
+            let (body_prelude, body_ret) = with_variable!(con.types, ty.clone(), {
+                with_variable!(con.c_vars, (param_c_ty.clone(), param_c_name.clone()), {
+                    compile_expr(body, con)
+                })
             });
 
             // Get the captured variables.
             let captured_variables_types: Vec<(Name, PTerm, c::PTypeExpr)> =
-                (term.free_vars().iter().map(|var_name| {
-                    let (var_c_type, var_c_name) = con.c_vars.get(var_name).unwrap();
-                    let var_n_type = con.n_vars.get(var_name).unwrap();
+                (term.free_vars().iter().map(|de_bruijn| {
+                    let (var_c_type, var_c_name) = de_bruijn.index(&con.c_vars).unwrap();
+                    let var_n_type = de_bruijn.index(&con.types).unwrap();
                     (var_c_name.clone(), var_n_type.clone(), var_c_type.clone())
                 }))
                 .collect();
@@ -678,7 +672,7 @@ fn compile_expr(term: &PTerm, con: &mut Context) -> (c::Block, ExprRet) {
                 .chain(
                     term.free_vars()
                         .iter()
-                        .map(|var| (con.c_vars.get(var).unwrap().clone())),
+                        .map(|de_bruijn| (de_bruijn.index(&con.c_vars).unwrap().clone())),
                 )
                 .collect();
 
@@ -730,13 +724,13 @@ fn compile_expr(term: &PTerm, con: &mut Context) -> (c::Block, ExprRet) {
         Term::TypeAnnotation(x, _) => {
             compile_expr(x, con).pipe(|(prelude, var)| (prelude, var.c_name))
         }
-        Term::Let(name, _, rhs, body) => {
+        Term::Let(_, rhs, body) => {
             let (rhs_prelude, var) = compile_expr(rhs, con);
 
-            let typ = infer(rhs, &mut con.n_vars).unwrap();
+            let typ = infer(rhs, &mut con.types).unwrap();
 
             let (body_prelude, body_ret) =
-                with_variable!(con.n_vars, (name, typ.clone()), { compile_expr(body, con) });
+                with_variable!(con.types, typ.clone(), { compile_expr(body, con) });
 
             let var_drop = compile_drop(var.c_name, &typ, con);
 
@@ -790,15 +784,15 @@ fn compile_expr(term: &PTerm, con: &mut Context) -> (c::Block, ExprRet) {
                     let n_vars: Vec<_> = compiled_pattern
                         .bindings
                         .iter()
-                        .map(|(n, var)| (n, var.n_type.clone()))
+                        .map(|var| var.n_type.clone())
                         .collect();
                     let c_vars: Vec<_> = compiled_pattern
                         .bindings
                         .iter()
-                        .map(|(n, var)| (n, (var.c_type.clone(), var.c_name.clone())))
+                        .map(|var| (var.c_type.clone(), var.c_name.clone()))
                         .collect();
 
-                    let (case_prelude, case_var) = with_variables!(con.n_vars, n_vars, {
+                    let (case_prelude, case_var) = with_variables!(con.types, n_vars, {
                         with_variables!(con.c_vars, c_vars, { compile_expr(case, con) })
                     });
 
@@ -814,7 +808,7 @@ fn compile_expr(term: &PTerm, con: &mut Context) -> (c::Block, ExprRet) {
                     let drop_vars: Vec<_> = compiled_pattern
                         .bindings
                         .iter()
-                        .flat_map(|(_, var)| compile_drop(var.c_name.clone(), &var.n_type, con))
+                        .flat_map(|var| compile_drop(var.c_name.clone(), &var.n_type, con))
                         .collect();
 
                     compiled_pattern
@@ -849,6 +843,7 @@ fn compile_literal_expr(literal: &Literal, con: &mut Context) -> (c::Block, Name
     match literal {
         Literal::Prop => (vec![], "prop".into()),
         Literal::Type => (vec![], "type".into()),
+        Literal::Str => (vec![], "str".into()),
         Literal::String(string) => {
             let name = con.name_gen.next(NameOptions::Var);
             (
@@ -863,12 +858,10 @@ fn compile_literal_expr(literal: &Literal, con: &mut Context) -> (c::Block, Name
             vec!["appendStrClosure".var().arrow("rc").inc().stmt()],
             "appendStrClosure".into(),
         ),
-        Literal::Str => todo!(),
     }
 }
 
 fn compile_type_expr(term: &PTerm, con: &mut Context) -> Result<c::TypeExpr, ()> {
-    let term = normalize(term);
     match term.as_ref() {
         Term::Literal(literal) => match literal {
             Literal::Prop => "prop".pipe(Ok),
@@ -879,7 +872,6 @@ fn compile_type_expr(term: &PTerm, con: &mut Context) -> Result<c::TypeExpr, ()>
         .map(|var_name| var_name.type_var()),
         Term::Arrow {
             kind: ArrowKind::Type,
-            param_name: _,
             ty,
             body,
         } => {
@@ -897,7 +889,7 @@ fn compile_type_expr(term: &PTerm, con: &mut Context) -> Result<c::TypeExpr, ()>
         }
         Term::TupleType(elements) => con
             .tuple_c_types
-            .get(&term)
+            .get(term)
             .map(|tuple| Ok(tuple.c_type_name.clone()))
             .unwrap_or_else(|| {
                 let c_elements = elements
@@ -927,7 +919,7 @@ fn compile_type_expr(term: &PTerm, con: &mut Context) -> Result<c::TypeExpr, ()>
         Term::TypeAnnotation(_, _) => Err(()),
         Term::Appl(_, _) => Err(()),
         Term::Var(_) => Err(()),
-        Term::Let(_, _, _, _) => Err(()),
+        Term::Let(_, _, _) => Err(()),
         Term::Tuple(_) => Err(()),
         Term::Arrow {
             kind: ArrowKind::Value,
