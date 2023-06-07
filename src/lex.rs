@@ -76,7 +76,8 @@ define_plain_enum! { pub enum Symbol {
     OpenParen "(",
     CloseParen ")",
     OpenCurly "{",
-    CloseCurly "}"
+    CloseCurly "}",
+    Pipe "|"
 } }
 
 #[derive(Copy, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Debug)]

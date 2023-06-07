@@ -129,3 +129,7 @@ pub fn destruct<T, U, E: Copy>(result: Result<(T, U), E>) -> (Result<T, E>, Resu
         Err(e) => (Err(e), Err(e)),
     }
 }
+
+pub fn is_sorted<T: Ord>(data: &[T]) -> bool {
+    data.windows(2).all(|w| w[0] <= w[1])
+}

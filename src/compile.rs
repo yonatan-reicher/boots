@@ -436,8 +436,8 @@ fn compile_tuple_declaration(c: &Tuple, con: &mut Context) -> [c::TopLevelDeclar
 }
 
 pub fn compile(term: &PTerm) -> c::Program {
-    dbg!(term);
-    let term_type = infer(term, &mut Default::default()).expect("Still no error handling...");
+    let term_type = infer(term, &mut Default::default(), &mut Default::default())
+        .expect("Still no error handling...");
 
     let mut context = Context::default();
 
@@ -599,7 +599,7 @@ fn compile_pattern(pattern: &Pattern, input_var: &ExprRet, con: &mut Context) ->
 // TODO: Add `compile_clone` calls where appropriate. Where should they be added?
 //       - When a name returned from a `compile_expr` call is used more than once.
 fn compile_expr(term: &PTerm, con: &mut Context) -> (c::Block, ExprRet) {
-    let term_type = infer(&term, &mut con.types).unwrap();
+    let term_type = infer(&term, &mut con.types, &mut Default::default()).unwrap();
     let term_type_expr: c::PTypeExpr = compile_type_expr(&term_type, con).unwrap().into();
 
     let (prelude, out_name) = match term.as_ref() {
@@ -727,7 +727,7 @@ fn compile_expr(term: &PTerm, con: &mut Context) -> (c::Block, ExprRet) {
         Term::Let(_, rhs, body) => {
             let (rhs_prelude, var) = compile_expr(rhs, con);
 
-            let typ = infer(rhs, &mut con.types).unwrap();
+            let typ = infer(rhs, &mut con.types, &mut Default::default()).unwrap();
 
             let (body_prelude, body_ret) =
                 with_variable!(con.types, typ.clone(), { compile_expr(body, con) });
@@ -826,7 +826,7 @@ fn compile_expr(term: &PTerm, con: &mut Context) -> (c::Block, ExprRet) {
                 output_name,
             )
         }
-        Term::TupleType(_) => todo!(),
+        Term::TupleType(_) | Term::UnionType(_) => todo!(),
     };
 
     (
@@ -916,6 +916,7 @@ fn compile_type_expr(term: &PTerm, con: &mut Context) -> Result<c::TypeExpr, ()>
                 Ok(name)
             })
             .map(c::TypeExpr::Var),
+        Term::UnionType(_) => todo!(),
         Term::TypeAnnotation(_, _) => Err(()),
         Term::Appl(_, _) => Err(()),
         Term::Var(_) => Err(()),

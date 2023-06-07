@@ -45,7 +45,7 @@ impl Engine {
     }
 
     pub fn infer_type(&self, term: PTerm) -> Result<PTerm, Vec<TypeError>> {
-        infer(&term, &mut self.type_context.borrow_mut())
+        infer(&term, &mut self.type_context.borrow_mut(), &mut self.eval_context.borrow_mut())
     }
 
     pub fn eval(&self, term: PTerm) -> PTerm {

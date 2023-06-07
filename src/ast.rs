@@ -13,6 +13,7 @@ pub enum Ast {
     Let(PAst, PAst, PAst),
     Tuple(Vec<Ast>),
     TupleType(Vec<Ast>),
+    UnionType(PAst, PAst, Vec<Ast>),
     Match(PAst, Vec<MatchArm>),
     Error,
 }

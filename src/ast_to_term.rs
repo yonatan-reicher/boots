@@ -87,8 +87,8 @@ impl State {
         }
     }
 
-    fn ast_slice_to_core(&mut self, asts: &[Ast]) -> Result<Vec<PTerm>, ()> {
-        asts.iter().map(|x| self.ast_to_term(x)).collect()
+    fn ast_iter_to_core<'a>(&mut self, asts: impl IntoIterator<Item=&'a Ast>) -> Result<Vec<PTerm>, ()> {
+        asts.into_iter().map(|x| self.ast_to_term(x)).collect()
     }
 
     pub fn ast_to_pattern(&mut self, ast: &Ast) -> Result<(Pattern, Vec<Name>), ()> {
@@ -116,6 +116,7 @@ impl State {
             Ast::Match(_, _) => todo!(),
             Ast::Arrow(_, _, _) => todo!(),
             Ast::Error => todo!(),
+            Ast::UnionType(..) => todo!(),
         }
     }
 
@@ -229,12 +230,17 @@ impl State {
                 });
                 Term::Let(typ?, rhs?, ret?).into_pterm().pipe(Ok)
             }
-            Ast::Tuple(terms) => Term::Tuple(self.ast_slice_to_core(terms)?)
+            Ast::Tuple(terms) => Term::Tuple(self.ast_iter_to_core(terms)?)
                 .into_pterm()
                 .pipe(Ok),
-            Ast::TupleType(terms) => Term::TupleType(self.ast_slice_to_core(terms)?)
+            Ast::TupleType(terms) => Term::TupleType(self.ast_iter_to_core(terms)?)
                 .into_pterm()
                 .pipe(Ok),
+            Ast::UnionType(first, second, rest) => {
+                let iter = [first.as_ref(), second.as_ref()].into_iter().chain(rest);
+                let terms = self.ast_iter_to_core(iter)?;
+                Ok(Term::UnionType(terms).into_pterm())
+            }
             Ast::Error => todo!(),
             Ast::Match(input, cases) => {
                 let input_term = self.ast_to_term(input)?;

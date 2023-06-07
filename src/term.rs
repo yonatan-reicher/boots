@@ -1,9 +1,8 @@
+mod display;
 mod eval;
 mod infer;
 
-use std::cell::RefCell;
 use std::collections::HashSet;
-use std::fmt::{self, Display, Formatter};
 use std::hash::Hash;
 use std::rc::Rc;
 
@@ -65,16 +64,12 @@ impl DeBruijn {
         DeBruijn(self.0 - 1)
     }
 
-    fn inc(&self) -> DeBruijn {
-        DeBruijn(self.0 + 1)
+    fn inc_by(&self, inc: usize) -> DeBruijn {
+        DeBruijn(self.0 + inc)
     }
-}
 
-struct DisplayDeBruijn(DeBruijn, usize);
-
-impl Display for DisplayDeBruijn {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(f, "_{}", self.1 as isize - self.0 .0 as isize)
+    fn inc(&self) -> DeBruijn {
+        self.inc_by(1)
     }
 }
 
@@ -100,6 +95,7 @@ pub enum Term {
     Let(Option<PTerm>, PTerm, PTerm),
     Tuple(Vec<PTerm>),
     TupleType(Vec<PTerm>),
+    UnionType(Vec<PTerm>),
     Match(PTerm, Vec<(Rc<Pattern>, PTerm)>),
 }
 
@@ -173,6 +169,9 @@ impl Term {
             Term::Var(_) => false,
             Term::Let(_, _, _) => false,
             Term::Match(_, _) => false,
+            Term::UnionType(elements) => {
+                elements.iter().all(|e| e.is_reduced()) && is_sorted(elements)
+            }
         }
     }
 
@@ -180,10 +179,12 @@ impl Term {
         matches!(self, Term::Let(..) | Term::Arrow { .. })
     }
 
-    pub fn childern(&self) -> Vec<PTerm> {
+    pub fn children(&self) -> Vec<PTerm> {
         match self {
             Term::Literal(_) | Term::Var(_) => vec![],
-            Term::Tuple(elements) | Term::TupleType(elements) => elements.clone(),
+            Term::Tuple(elements) | Term::TupleType(elements) | Term::UnionType(elements) => {
+                elements.clone()
+            }
             Term::Arrow { ty, body, .. } => vec![ty.clone(), body.clone()],
             Term::Appl(lhs, rhs) => vec![lhs.clone(), rhs.clone()],
             Term::TypeAnnotation(term, ty) => vec![term.clone(), ty.clone()],
@@ -208,7 +209,7 @@ impl Term {
             } else {
                 depth
             };
-            stack.extend(term.childern().into_iter().map(|t| (inner_depth, t)));
+            stack.extend(term.children().into_iter().map(|t| (inner_depth, t)));
 
             Some((depth, term))
         })
@@ -224,247 +225,93 @@ impl Term {
             })
             .collect()
     }
-}
 
-struct DisplayTuple<T: Display> {
-    start: char,
-    end: char,
-    elems: Vec<T>,
-}
-
-impl<T: Display> Display for DisplayTuple<T> {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        self.start.fmt(f)?;
-        for (i, elem) in self.elems.iter().enumerate() {
-            if i > 0 {
-                write!(f, ", ")?;
-            }
-            elem.fmt(f)?;
-        }
-        self.end.fmt(f)
-    }
-}
-
-struct DisplayPattern<'a, 'b> {
-    pat: &'a Pattern,
-    depth: &'b RefCell<usize>,
-}
-
-impl<'a, 'b> Display for DisplayPattern<'a, 'b> {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        match self.pat {
-            Pattern::String(s) => write!(f, "{:?}", s),
-            Pattern::Var => {
-                *self.depth.borrow_mut() += 1;
-                DisplayDeBruijn(DeBruijn::TOP, *self.depth.borrow()).fmt(f)
-            }
-            Pattern::UnTuple(terms) => DisplayTuple {
-                start: '(',
-                end: ')',
-                elems: terms
+    pub fn increase_de_bruijns_not_bellow(self: &PTerm, inc: usize, not_bellow: usize) -> PTerm {
+        match self.as_ref() {
+            Term::Appl(left, right) => Term::Appl(
+                left.increase_de_bruijns_not_bellow(inc, not_bellow),
+                right.increase_de_bruijns_not_bellow(inc, not_bellow),
+            )
+            .into(),
+            Term::TypeAnnotation(left, right) => Term::TypeAnnotation(
+                left.increase_de_bruijns_not_bellow(inc, not_bellow),
+                right.increase_de_bruijns_not_bellow(inc, not_bellow),
+            )
+            .into(),
+            Term::Literal(_) => self.clone(),
+            Term::Var(de_bruijn) if de_bruijn.0 < not_bellow => self.clone(),
+            Term::Var(de_bruijn) => de_bruijn.inc_by(inc).pipe(Term::Var).into(),
+            Term::Tuple(elements) => Term::Tuple(
+                elements
                     .iter()
-                    .map(|t| DisplayPattern {
-                        pat: t,
-                        depth: self.depth,
+                    .map(|t| t.increase_de_bruijns_not_bellow(inc, not_bellow))
+                    .collect(),
+            )
+            .into(),
+            Term::TupleType(elements) => Term::TupleType(
+                elements
+                    .iter()
+                    .map(|t| t.increase_de_bruijns_not_bellow(inc, not_bellow))
+                    .collect(),
+            )
+            .into(),
+            Term::UnionType(elements) => Term::UnionType(
+                elements
+                    .iter()
+                    .map(|t| t.increase_de_bruijns_not_bellow(inc, not_bellow))
+                    .collect(),
+            )
+            .into(),
+            Term::Arrow { kind, ty, body } => Term::Arrow {
+                kind: *kind,
+                ty: ty.increase_de_bruijns_not_bellow(inc, not_bellow),
+                body: body.increase_de_bruijns_not_bellow(inc, not_bellow + 1),
+            }
+            .into(),
+            Term::Let(annot, right, ret) => Term::Let(
+                annot
+                    .as_ref()
+                    .map(|annot| annot.increase_de_bruijns_not_bellow(inc, not_bellow)),
+                right.increase_de_bruijns_not_bellow(inc, not_bellow),
+                ret.increase_de_bruijns_not_bellow(inc, not_bellow + 1),
+            )
+            .into(),
+            Term::Match(input, cases) => Term::Match(
+                input.increase_de_bruijns_not_bellow(inc, not_bellow),
+                cases
+                    .iter()
+                    .map(|(pat, body)| {
+                        (
+                            pat.clone(),
+                            body.increase_de_bruijns_not_bellow(inc, not_bellow + pat.vars()),
+                        )
                     })
                     .collect(),
-            }
-            .fmt(f),
+            )
+            .into(),
         }
     }
-}
 
-struct DisplayAtom<'a> {
-    term: &'a Term,
-    depth: usize,
-}
-
-impl<'a> Display for DisplayAtom<'a> {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        let display_term = DisplayTerm {
-            term: self.term,
-            depth: self.depth,
-        };
-        if self.term.is_atom() {
-            write!(f, "{display_term}")
-        } else {
-            write!(f, "({display_term})")
-        }
+    pub fn increase_de_bruijns(self: &PTerm, inc: usize) -> PTerm {
+        self.increase_de_bruijns_not_bellow(inc, 0)
     }
-}
 
-struct DisplayTerm<'a> {
-    term: &'a Term,
-    depth: usize,
-}
-
-impl<'a> Display for DisplayTerm<'a> {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        match self.term {
-            Term::Appl(lhs, rhs) => write!(
-                f,
-                "{} {}",
-                if let Term::Appl(..) = lhs.as_ref() {
-                    Box::new(DisplayTerm {
-                        term: lhs,
-                        depth: self.depth,
-                    }) as Box<dyn Display>
-                } else {
-                    Box::new(DisplayAtom {
-                        term: lhs,
-                        depth: self.depth,
-                    }) as Box<dyn Display>
-                },
-                DisplayAtom {
-                    term: rhs,
-                    depth: self.depth
-                }
-            ),
-            Term::Arrow {
-                kind: ArrowKind::Type,
-                ty,
-                body,
-            } if body.free_vars().into_iter().all(|x| x != DeBruijn::TOP) => {
-                write!(
-                    f,
-                    "{} -> {}",
-                    DisplayAtom {
-                        term: ty,
-                        depth: self.depth
-                    },
-                    DisplayTerm {
-                        term: body,
-                        depth: self.depth
-                    },
-                )
-            }
-            Term::Arrow {
-                kind: binder,
-                ty,
-                body,
-            } => write!(
-                f,
-                "({display_var}: {}) {arrow} {}",
-                DisplayTerm {
-                    term: ty,
-                    depth: self.depth
-                },
-                DisplayTerm {
-                    term: body,
-                    depth: self.depth + 1
-                },
-                display_var = DisplayDeBruijn(DeBruijn::TOP, self.depth + 1),
-                arrow = match binder {
-                    ArrowKind::Type => "->",
-                    ArrowKind::Value => "=>",
-                },
-            ),
-            Term::Literal(literal) => write!(f, "{literal}"),
-            Term::TypeAnnotation(lhs, rhs) => write!(
-                f,
-                "{}: {}",
-                DisplayAtom {
-                    term: lhs,
-                    depth: self.depth
-                },
-                DisplayAtom {
-                    term: rhs,
-                    depth: self.depth
-                },
-            ),
-            Term::Var(var) => DisplayDeBruijn(*var, self.depth).fmt(f),
-            Term::Let(None, bind, ret) => write!(
-                f,
-                "let {name} = {} in {}",
-                DisplayAtom {
-                    term: bind,
-                    depth: self.depth
-                },
-                DisplayTerm {
-                    term: ret,
-                    depth: self.depth
-                },
-                name = DisplayDeBruijn(DeBruijn::TOP, self.depth + 1),
-            ),
-            Term::Let(Some(annot), bind, ret) => write!(
-                f,
-                "let {name} : {} = {} in {}",
-                DisplayAtom {
-                    term: annot,
-                    depth: self.depth
-                },
-                DisplayTerm {
-                    term: bind,
-                    depth: self.depth
-                },
-                DisplayTerm {
-                    term: ret,
-                    depth: self.depth + 1
-                },
-                name = DisplayDeBruijn(DeBruijn::TOP, self.depth),
-            ),
-            Term::Tuple(elements) => DisplayTuple {
-                start: '(',
-                end: ')',
-                elems: elements.iter().collect(),
-            }
-            .fmt(f),
-            Term::TupleType(elements) => DisplayTuple {
-                start: '{',
-                end: '}',
-                elems: elements.iter().collect(),
-            }
-            .fmt(f),
-            Term::Match(term, cases) => {
-                write!(
-                    f,
-                    "match {} with {{ ",
-                    DisplayTerm {
-                        term: term,
-                        depth: self.depth
-                    },
-                )?;
-                for (pattern, body) in cases {
-                    let depth = RefCell::new(self.depth + 1);
-                    write!(
-                        f,
-                        "{} => {} ",
-                        DisplayPattern {
-                            pat: pattern,
-                            depth: &depth,
-                        },
-                        DisplayTerm {
-                            term: body,
-                            depth: *depth.borrow(),
-                        },
-                    )?;
-                }
-                write!(f, "}}")?;
-                Ok(())
+    /// Returns true only if this instance is a subtype of the other instance.
+    /// Both terms must be evaluated.
+    pub fn is_subtype(self: &Term, other: &Term) -> bool {
+        self == other || {
+            if let Term::UnionType(possible_types) = other {
+                possible_types.iter().any(|t| self.is_subtype(t))
+            } else {
+                false
             }
         }
     }
-}
 
-impl Display for Term {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        DisplayTerm {
-            term: self,
-            depth: 0,
-        }
-        .fmt(f)
-    }
-}
+    pub fn supertype(types: &[PTerm]) -> PTerm {
+        assert!(!types.is_empty());
 
-impl Display for Literal {
-    fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        use Literal::*;
-        match self {
-            Prop => write!(f, "prop"),
-            Type => write!(f, "type"),
-            String(s) => write!(f, "\"{s}\""),
-            Str => write!(f, "str"),
-            StringAppend => write!(f, "<string-append>"),
-        }
+        // Construct a minimal union of all the types.
+        eval(&Term::UnionType(types.to_vec()).into(), &mut Default::default())
     }
 }

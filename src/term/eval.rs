@@ -10,26 +10,28 @@ pub fn normalize(term: &PTerm) -> PTerm {
 }
 */
 
+// TODO: Move to impl Term.
 pub fn children(term: &Term) -> Vec<PTerm> {
     match term {
         Term::Appl(lhs, rhs) | Term::TypeAnnotation(lhs, rhs) => vec![lhs.clone(), rhs.clone()],
         Term::Arrow { ty, body, .. } => vec![ty.clone(), body.clone()],
         Term::Var(_) | Term::Literal(_) => vec![],
         Term::Let(annot, rhs, ret) => vec![rhs.clone(), ret.clone()].extend_pipe(annot.clone()),
-        Term::Tuple(elements) | Term::TupleType(elements) => elements.clone(),
+        Term::Tuple(elements) | Term::TupleType(elements) | Term::UnionType(elements) => elements.clone(),
         Term::Match(input, cases) => {
             vec![input.clone()].extend_pipe(cases.iter().map(|x| x.1.clone()))
         }
     }
 }
 
+// TODO: Move to impl Term.
 pub fn children_mut(term: &mut Term) -> Vec<&mut PTerm> {
     match term {
         Term::Appl(lhs, rhs) | Term::TypeAnnotation(lhs, rhs) => vec![lhs, rhs],
         Term::Arrow { ty, body, .. } => vec![ty, body],
         Term::Var(_) | Term::Literal(_) => vec![],
         Term::Let(annot, rhs, ret) => vec![rhs, ret].extend_pipe(annot.as_mut()),
-        Term::Tuple(elements) | Term::TupleType(elements) => elements.iter_mut().collect(),
+        Term::Tuple(elements) | Term::TupleType(elements) | Term::UnionType(elements) => elements.iter_mut().collect(),
         Term::Match(input, cases) => vec![input].extend_pipe(cases.iter_mut().map(|x| &mut x.1)),
     }
 }
@@ -52,7 +54,7 @@ pub fn substitute(term: &PTerm, de_bruijn: DeBruijn, arg: &PTerm) -> PTerm {
         Term::Arrow { kind, ty, body } => Term::Arrow {
             kind: kind.clone(),
             ty: substitute(ty, de_bruijn, arg),
-            body: substitute(body, de_bruijn.inc(), arg),
+            body: substitute(body, de_bruijn.inc(), &arg.increase_de_bruijns(1)),
         }
         .into(),
         Term::Let(annot, rhs, ret) => Term::Let(
@@ -60,7 +62,7 @@ pub fn substitute(term: &PTerm, de_bruijn: DeBruijn, arg: &PTerm) -> PTerm {
                 .as_ref()
                 .map(|annot| substitute(annot, de_bruijn, arg)),
             substitute(rhs, de_bruijn, arg),
-            substitute(ret, de_bruijn.inc(), arg),
+            substitute(ret, de_bruijn.inc(), &arg.increase_de_bruijns(1)),
         )
         .into(),
         Term::Appl(left, right) => Term::Appl(
@@ -81,6 +83,13 @@ pub fn substitute(term: &PTerm, de_bruijn: DeBruijn, arg: &PTerm) -> PTerm {
         )
         .into(),
         Term::TupleType(elements) => Term::TupleType(
+            elements
+                .iter()
+                .map(|x| substitute(x, de_bruijn, arg))
+                .collect(),
+        )
+        .into(),
+        Term::UnionType(elements) => Term::UnionType(
             elements
                 .iter()
                 .map(|x| substitute(x, de_bruijn, arg))
@@ -130,6 +139,7 @@ pub fn eval(term: &PTerm, vars: &mut Context) -> PTerm {
             .index(vars)
             .cloned()
             .unwrap()
+            // If this variable is unbound, leave it as is.
             .unwrap_or(term.clone()),
         Appl(lhs, rhs) => {
             let lhs = eval(lhs, vars);
@@ -137,7 +147,21 @@ pub fn eval(term: &PTerm, vars: &mut Context) -> PTerm {
 
             // Function application.
             if let Arrow { body, .. } = lhs.as_ref() {
-                return with_variable!(vars, Some(rhs), { eval(body, vars) });
+                dbg!("eval: function application");
+                dbg!(&vars);
+                dbg!(&rhs);
+                dbg!(&body);
+                return eval(
+                    &substitute(body, DeBruijn::TOP, &rhs),
+                    vars,
+                );
+                // return dbg!(with_variable!(vars, Some(rhs.clone()), { dbg!(eval(body, vars)) }));
+                // return dbg!(substitute(
+                //     &with_variable!(vars, Some(rhs.clone()), { dbg!(eval(body, vars)) }),
+                //     DeBruijn::TOP,
+                //     // This doesn't matter because the variable has already been substituted.
+                //     &rhs,
+                // ));
             }
 
             // `string-append` function.
@@ -190,6 +214,14 @@ pub fn eval(term: &PTerm, vars: &mut Context) -> PTerm {
         TupleType(elements) => TupleType(elements.iter().map(|e| eval(e, vars)).collect()).into(),
         Match(input, cases) => {
             let input = eval(input, vars);
+
+            // Special case: Only one case and it is a wildcard.
+            if cases.len() == 1 {
+                if let Some((Pattern::Var, body)) = cases.first().map(|(p, b)| (p.as_ref(), b)) {
+                    return with_variable!(vars, Some(input), { eval(body, vars) });
+                }
+            }
+
             cases
                 .iter()
                 .find_map(|(pattern, case)| {
@@ -201,6 +233,59 @@ pub fn eval(term: &PTerm, vars: &mut Context) -> PTerm {
                     })
                 })
                 .unwrap_or_else(|| Match(input, cases.clone()).into())
+        }
+        UnionType(elements) => {
+            assert!(elements.len() > 0);
+
+            // 1. Evaluate every possible type, and flatten unions
+            // ((int | (str | type)) == (int | str | type))
+            // 2. Remove duplicates
+            // 3. Sort (Unions need consitant representation (int | str) == (str | int)).
+            
+            let mut elements = elements.iter()
+                // Evaluate each element.
+                .map(|e| eval(e, vars))
+                // Flatten unions.
+                .flat_map(|e| match e.as_ref() {
+                    UnionType(elements) => elements.clone(),
+                    _ => vec![e],
+                })
+                // Make elements optional for the next step.
+                .map(Some)
+                .collect::<Vec<_>>();
+
+            // Remove types which are subtypes of other types.
+            for i in 0..elements.len() {
+                // Take this element, will be put back at the end.
+                let Some(e) = elements[i].take() else {
+                    continue;
+                };
+
+                // Set every subtype of this type to None. (This element is
+                // ignored, because we took it out)
+                for j in 0..elements.len() {
+                    if let Some(e2) = &elements[j] {
+                        if e2.is_subtype(&e) {
+                            elements[j] = None;
+                        }
+                    }
+                }
+
+                // Return this type to its place.
+                elements[i] = Some(e);
+            }
+
+            // Remove None elements.
+            let mut elements = elements.into_iter().filter_map(|e| e).collect::<Vec<_>>();
+
+            // If there is only one element, deconstruct the union.
+            if let [x] = elements.as_slice() {
+                return x.clone();
+            }
+
+            elements.sort_unstable();
+
+            UnionType(elements).into()
         }
     }
 }
@@ -284,3 +369,87 @@ pub fn eval(term: &Term) -> Option<PTerm> {
     }
 }
 */
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::global::Pipe;
+    use indoc::indoc;
+
+    fn get_context() -> Vec<Option<PTerm>> {
+        vec! [
+            Some(Literal::Str.pipe(Term::Literal).into()),
+            Some(Literal::StringAppend.pipe(Term::Literal).into()),
+        ]
+    }
+
+    fn get_names() -> Vec<crate::name::Name> {
+        vec! [
+            "str".into(),
+            "string-append".into(),
+        ]
+    }
+
+    fn code(source: &'static str) -> PTerm {
+        use crate::parse::parse;
+        use crate::ast_to_term::ast_to_term;
+
+        let ast = parse(source).expect("Test code could not be parsed correctly");
+        let term = ast_to_term(&ast, &get_names()).expect("Test code could not be converted to term correctly");
+        term
+    }
+
+    fn code_eval(source: &'static str) -> PTerm {
+        eval(&code(source), &mut get_context())
+    }
+
+    #[test]
+    fn eval_literal() {
+        let input = code("type");
+        assert_eq!(eval(&input, &mut get_context()), input);
+    }
+
+    #[test]
+    fn eval_stuck_application() {
+        let input = code("type type");
+        assert_eq!(eval(&input, &mut get_context()), input);
+    }
+
+    #[test]
+    fn eval_application() {
+        let input = code_eval("((x: type) => x) type");
+        assert_eq!(input, code("type"));
+    }
+
+    #[test]
+    fn eval_nested_application() {
+        let input = code_eval("(a: type) => (b: type) => ((x: type) => (y: type) => x) a b");
+        assert_eq!(input, code("(a: type) => (b: type) => a"));
+    }
+
+    #[test]
+    fn eval_curried_application() {
+        let input = code_eval(indoc! {"
+            (x: prop) => (y: prop) => ((y: prop) => (x: prop) => y) x
+        "});
+        let output = code_eval(indoc! {"
+            (x: prop) => (y: prop) => (z: prop) => x
+        "});
+        assert_eq!(input, output);
+    }
+
+    #[test]
+    fn eval_global() {
+        let input = Term::Var(DeBruijn(0)).into_pterm();
+        assert_eq!(eval(&input, &mut get_context()), Literal::StringAppend.into());
+    }
+
+    #[test]
+    fn eval_application_decreases_vars() {
+        let input = code_eval(indoc! {"
+            ((x: type) => (y: type) => y x) str
+        "});
+        assert_eq!(input, code_eval("(y: type) => y str"));
+        assert!(std::matches!(input.as_ref(), Term::Arrow { .. }), "Check that the type is an arrow");
+    }
+}

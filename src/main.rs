@@ -97,6 +97,8 @@ fn main() -> IORes<()> {
                         .infer_type(expr.clone())
                         .expect("Failed to infer type");
                     println!("Type is {typ}");
+                    let typ = engine.eval(typ);
+                    println!("Type is {typ}");
                 }
                 let evaluated = engine.eval(expr);
                 println!("{evaluated}");

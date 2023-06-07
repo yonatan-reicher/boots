@@ -1,5 +1,6 @@
 use crate::global::{with_variable, with_variables, Pipe, Withable};
 use crate::term::{substitute, ArrowKind, Literal, PTerm, Pattern, Term};
+use crate::term::eval::{eval, Context as EvalContext};
 
 use super::DeBruijn;
 
@@ -18,11 +19,12 @@ pub enum Error {
     StringPatternWrongType(PTerm),
 }
 
-pub fn infer(term: &PTerm, context: &mut Context) -> Result<PTerm, Vec<Error>> {
+pub fn infer(term: &PTerm, context: &mut Context, eval_context: &mut EvalContext) -> Result<PTerm, Vec<Error>> {
     let mut errors = Vec::new();
     let mut state = State {
         errors: &mut errors,
         context,
+        eval_context,
     };
 
     let res = state.infer(term);
@@ -37,6 +39,7 @@ pub fn infer(term: &PTerm, context: &mut Context) -> Result<PTerm, Vec<Error>> {
 struct State<'a> {
     errors: &'a mut Vec<Error>,
     context: &'a mut Context,
+    eval_context: &'a mut EvalContext,
 }
 
 impl<'a> State<'a> {
@@ -84,6 +87,11 @@ impl<'a> State<'a> {
             Term::Var(de_bruijn) => de_bruijn
                 .index(&self.context)
                 .cloned()
+                // When we are pulling a type from the context, it is an
+                // expression in the context bellow it, and depends on variables
+                // from bellow based on de bruijn indices from *it's own* context.
+                // So we need to shift it by the number of variables not bellow it.
+                .map(|t| t.increase_de_bruijns(de_bruijn.0 + 1))
                 .ok_or_else(|| self.errors.push(Error::VariableNotFound)),
             Term::Appl(lhs, rhs) => {
                 let lhs_type = self.infer(lhs);
@@ -97,7 +105,7 @@ impl<'a> State<'a> {
                     return Err(());
                 };
 
-                if param_ty != &rhs_type {
+                if !rhs_type.is_subtype(param_ty) {
                     self.errors.push(Error::ArgumentTypeDoesntMatch);
                 }
 
@@ -138,7 +146,7 @@ impl<'a> State<'a> {
                 let term_type = self.infer(term)?;
                 //
                 // Check that the type of term matches the type annotation.
-                if term_type != *typ {
+                if !term_type.is_subtype(typ) {
                     self.errors.push(Error::WrongTypeAnnotation);
                 }
 
@@ -150,13 +158,16 @@ impl<'a> State<'a> {
 
                 // Check the type annotation.
                 if let Some(annotation) = annotation {
-                    if rhs_type.as_ref() != Ok(annotation) {
+                    if !rhs_type.clone()?.is_subtype(annotation) {
                         self.errors.push(Error::WrongTypeAnnotation);
                     }
                 }
 
                 let rhs_type = annotation.clone().map(Ok).unwrap_or(rhs_type)?;
-                with_variable!(self.context, rhs_type, { self.infer(body) })
+                let body_type =
+                    with_variable!(self.context, rhs_type.clone(), { self.infer(body) });
+
+                Ok(Term::Let(annotation.clone(), rhs_type, body_type?).into())
             }
             Term::Tuple(elements) => {
                 let element_types = elements
@@ -165,8 +176,9 @@ impl<'a> State<'a> {
                     .collect::<Result<Vec<_>, _>>()?;
                 Ok(Term::TupleType(element_types).into())
             }
-            Term::TupleType(_) => Ok(Literal::Type.pipe(Term::Literal).into()),
+            Term::TupleType(_) | Term::UnionType(_) => Ok(Literal::Type.pipe(Term::Literal).into()),
             Term::Match(input, cases) => {
+                /*
                 let input_type = self.infer(input)?;
                 let case_types: Vec<PTerm> = cases
                     .iter()
@@ -184,13 +196,30 @@ impl<'a> State<'a> {
                     return Err(());
                 }
 
-                if case_types[1..].iter().any(|t| t != &case_types[0]) {
-                    self.errors.push(Error::MatchArmsTypeMismatch);
+                let supertype = Term::supertype(&case_types);
+                Ok(supertype)
+                */
+                let input_type = self.infer(input)?;
+                let case_types: Vec<(_, PTerm)> = cases
+                    .iter()
+                    .map(|(pattern, case)| {
+                        let pattern_variable_types = self.infer_pattern(pattern, &input_type)?;
+                        let case_type = with_variables!(self.context, pattern_variable_types, {
+                            self.infer(case)?
+                        });
+                        Ok((pattern.clone(), case_type))
+                    })
+                    .collect::<Result<Vec<(_, _)>, _>>()?;
+
+                if case_types.is_empty() {
+                    self.errors.push(Error::EmptyMatch);
+                    return Err(());
                 }
 
-                Ok(case_types[0].clone())
+                Ok(Term::Match(input.clone(), case_types).into())
             }
         }
+        .map(|t| eval(&t, self.eval_context))
     }
 
     fn literal_type(literal: &Literal) -> PTerm {
