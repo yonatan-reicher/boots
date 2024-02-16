@@ -22,29 +22,81 @@ macro_rules! with_variable {
 }
 pub(crate) use with_variable;
 
-pub fn extend<T, I: IntoIterator<Item = T>>(mut left: Vec<T>, right: I) -> Vec<T> {
+macro_rules! with_variables {
+    ($variables:expr, $variables_to_add:expr, $do:expr) => {{
+
+        let old_values = $variables_to_add.into_iter().map(|(name, value)| {
+            (name.clone(), $variables.insert(name.clone(), value))
+        }).collect::<Vec<_>>();
+
+        let x = $do;
+
+        for (name, old_value) in old_values {
+            if let Some(old_value) = old_value {
+                $variables.insert(name, old_value);
+            } else {
+                $variables.remove(&name);
+            }
+        }
+
+        x
+    }};
+}
+pub(crate) use with_variables;
+
+#[inline]
+pub fn extend<T, E: Extend<T>, I: IntoIterator<Item = T>>(mut left: E, right: I) -> E {
     left.extend(right);
     left
 }
 
-pub trait VecPipe<T>: Into<Vec<T>> {
-    fn extend_pipe<I: IntoIterator<Item = T>>(self, right: I) -> Vec<T> {
+pub trait ExtendPipe<T, E: Extend<T>>: Into<E> {
+    #[inline]
+    fn extend_pipe<I: IntoIterator<Item = T>>(self, right: I) -> E {
         extend(self.into(), right)
     }
 
-    fn extend_pipe_one(self, right: T) -> Vec<T> {
-        let mut v = self.into();
-        v.push(right);
-        v
+    #[inline]
+    fn extend_pipe_one(self, right: T) -> E {
+        self.extend_pipe(Some(right))
     }
 }
 
-impl<T, V> VecPipe<T> for V where V: Into<Vec<T>> {}
+impl<T, E: Extend<T>> ExtendPipe<T, E> for E {}
 
 pub trait Pipe<T, U>: Into<T> {
+    #[inline]
     fn pipe(self, f: impl FnOnce(T) -> U) -> U {
         f(self.into())
     }
 }
 
 impl<T, U> Pipe<T, U> for T {}
+
+pub fn collect_results<T, E>(results: impl IntoIterator<Item = Result<T, E>>) -> Result<Vec<T>, Vec<E>> {
+    let mut ret: Result<Vec<_>, Vec<_>> = Ok(vec![]);
+
+    for result in results {
+        match result {
+            Ok(x) => ret = ret.map(|mut v| {
+                v.push(x);
+                v
+            }),
+            Err(e) => ret = ret.map_err(|mut v| {
+                v.push(e);
+                v
+            }),
+        }
+    }
+
+    ret
+}
+
+#[inline]
+pub fn destruct<T, U, E: Copy>(result: Result<(T, U), E>) -> (Result<T, E>, Result<U, E>) {
+    match result {
+        Ok((t, u)) => (Ok(t), Ok(u)),
+        Err(e) => (Err(e), Err(e)),
+    }
+}
+

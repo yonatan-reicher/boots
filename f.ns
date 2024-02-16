@@ -1,1 +1,1 @@
-(x: prop) => (y: prop) => ((y: prop) => (x: prop) => y) x y
+(x: prop) => (y: prop) => ((y: prop) => (x: prop) => y) x

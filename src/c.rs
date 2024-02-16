@@ -1,8 +1,8 @@
+pub mod combine_traits;
 /**
  * Contains an types and functions for emiting C code.
  */
 mod indented_text;
-pub mod combine_traits;
 
 use std::rc::Rc;
 
@@ -20,6 +20,7 @@ trait MultilineCode {
 #[derive(Debug, Clone)]
 pub struct Program {
     pub includes: Vec<Include>,
+    // TODO: Seperate into functions and structs - and put structs first.
     pub declarations: Vec<TopLevelDeclaration>,
 }
 
@@ -35,8 +36,7 @@ pub enum Include {
 #[derive(Debug, Clone)]
 pub enum TopLevelDeclaration {
     Function(Function),
-    Typedef(TypeExpr, Name),
-    Struct(Name, Vec<(PTypeExpr, Name)>),
+    Struct(Name, Option<Vec<(PTypeExpr, Name)>>),
 }
 
 #[derive(Debug, Clone)]
@@ -50,6 +50,7 @@ pub struct Function {
 #[derive(Debug, Clone)]
 pub enum TypeExpr {
     Var(Name),
+    #[allow(dead_code)]
     StructVar(Name),
     Ptr(PTypeExpr),
     // Allow dead code - might be useful in the future.
@@ -77,7 +78,7 @@ pub enum Statement {
     Declaration {
         type_expression: PTypeExpr,
         name: Name,
-        initializer: Expr,
+        initializer: Option<Expr>,
     },
 }
 
@@ -122,22 +123,30 @@ pub enum BinaryOp {
     Le,
     Gt,
     Ge,
+    And,
+    Or,
+}
+
+fn seperate_with_newlines(i: impl IntoIterator<Item = I>) -> impl Iterator<Item = I> {
+    i.into_iter().flat_map(|i| [i, I::line_str("")])
 }
 
 impl MultilineCode for Program {
     fn to_code_i(&self) -> I {
+        let (start, end): (Vec<_>, Vec<_>) = self
+            .declarations
+            .iter()
+            .map(|decl| decl.to_code_i())
+            .unzip();
+
         I::many([
             I::lines(self.includes.iter().map(|include| match include {
                 Include::Arrow(path) => format!("#include <{path}>"),
                 Include::Quote(path) => format!("#include \"{path}\""),
             })),
             I::line_str(""),
-            I::many_vec(
-                self.declarations
-                    .iter()
-                    .map(|decl| decl.to_code_i().then(I::line_str("")))
-                    .collect(),
-            ),
+            I::many(seperate_with_newlines(start)),
+            I::many(seperate_with_newlines(end.into_iter().filter_map(|x| x))),
         ])
     }
 }
@@ -148,13 +157,28 @@ impl Program {
     }
 }
 
-impl MultilineCode for TopLevelDeclaration {
-    fn to_code_i(&self) -> I {
+impl TopLevelDeclaration {
+    pub fn to_code_i(&self) -> (I, Option<I>) {
         use TopLevelDeclaration::*;
         match self {
-            Function(function) => function.to_code_i(),
-            Typedef(typ, name) => I::line(format!("typedef {};", typ.to_code_with_name_typedef(name))),
-            Struct(name, fields) => I::line(struct_code(Some(name), fields)).then(I::AddToLastLine(";".into())),
+            Function(function) if function.body.is_some() => {
+                let without_body = self::Function {
+                    body: None,
+                    ..function.clone()
+                };
+
+                (without_body.to_code_i(), Some(function.to_code_i()))
+            }
+            Function(function) => (function.to_code_i(), None),
+            Struct(name, fields) => (
+                I::line(format!("typedef struct {} {};", name, name)),
+                fields.as_ref().map(|fields| {
+                    I::many_vec(vec![
+                        I::line(struct_code(Some(name), fields)),
+                        I::AddToLastLine(";".into()),
+                    ])
+                }),
+            ),
         }
     }
 }
@@ -276,6 +300,8 @@ impl Expr {
                     BinaryOp::Le => " <= ",
                     BinaryOp::Gt => " > ",
                     BinaryOp::Ge => " >= ",
+                    BinaryOp::And => " && ",
+                    BinaryOp::Or => " || ",
                 });
                 code.push_str(rhs.to_code().as_str());
                 code.push(')');
@@ -290,21 +316,13 @@ impl Expr {
                 code.push(')');
                 code
             }
-            Expr::Arrow(e, name) => {
-                e.to_code() + "->" + name
-            }
-            Expr::Dot(e, name) => {
-                e.to_code() + "." + name
-            }
+            Expr::Arrow(e, name) => e.to_code() + "->" + name,
+            Expr::Dot(e, name) => e.to_code() + "." + name,
             Expr::SizeOf(type_expr) => {
                 format!("sizeof({})", type_expr.to_code())
             }
-            Expr::Inc(e) => {
-                e.to_code() + "++"
-            }
-            Expr::Dec(e) => {
-                e.to_code() + "--"
-            }
+            Expr::Inc(e) => e.to_code() + "++",
+            Expr::Dec(e) => e.to_code() + "--",
         }
     }
 }
@@ -317,7 +335,7 @@ fn struct_code(struct_type_name: Option<&str>, fields: &Vec<(PTypeExpr, Name)>) 
     if let Some(name) = struct_type_name {
         buf += name;
         buf += " ";
-    } 
+    }
     buf += "{ ";
 
     for (field_typ, field_name) in fields {
@@ -367,6 +385,7 @@ impl TypeExpr {
         }
     }
 
+    /*
     /// Convert a type expression to a string, of a value with a name for a
     /// typedef.
     /// The difference is that in a typedef, a struct needs to get the name
@@ -384,14 +403,23 @@ impl TypeExpr {
             _ => self.to_code_with_name(name),
         }
     }
+    */
 }
 
-fn assignment_declaration_code(type_expression: &TypeExpr, name: &str, rhs: &Expr) -> String {
-    format!(
-        "{} = {}",
-        type_expression.to_code_with_name(name),
-        rhs.to_code()
-    )
+fn assignment_declaration_code(
+    type_expression: &TypeExpr,
+    name: &str,
+    rhs: &Option<Expr>,
+) -> String {
+    if let Some(rhs) = rhs {
+        format!(
+            "{} = {}",
+            type_expression.to_code_with_name(name),
+            rhs.to_code()
+        )
+    } else {
+        type_expression.to_code_with_name(name)
+    }
 }
 
 /*

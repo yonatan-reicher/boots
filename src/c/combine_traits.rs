@@ -4,12 +4,18 @@
 
 use crate::c::{BinaryOp, Block, Expr, PTypeExpr, Statement, TypeExpr};
 use crate::name::Name;
+use crate::global::Pipe;
 
 /// Implements functions for making expressions out of other things.
 pub trait CombExpr1: Into<Box<Expr>> {
-    /// Makes an access expression.
+    /// Makes an arrow access expression.
     fn arrow(self, field: impl Into<Name>) -> Expr {
         Expr::Arrow(self.into(), field.into())
+    }
+
+    /// Makes an dot access expression.
+    fn dot(self, field: impl Into<Name>) -> Expr {
+        Expr::Dot(self.into(), field.into())
     }
 
     fn inc(self) -> Expr {
@@ -61,7 +67,7 @@ pub trait CombExpr2: Into<Expr> {
         Statement::Declaration {
             type_expression: type_expr.into(),
             name: name.into(),
-            initializer: self.into(),
+            initializer: self.into().pipe(Some),
         }
     }
 
@@ -88,7 +94,16 @@ pub trait CombTypeExpr: Into<PTypeExpr> {
     fn function_ptr(self, parameters: impl Into<Vec<PTypeExpr>>) -> TypeExpr {
         TypeExpr::FunctionPtr(self.into(), parameters.into())
     }
+
+    fn declare(self, name: impl Into<Name>, initializer: Option<Expr>) -> Statement {
+        Statement::Declaration {
+            type_expression: self.into(),
+            name: name.into(),
+            initializer,
+        }
+    }
 }
+
 
 impl<T> CombTypeExpr for T where T: Into<PTypeExpr> {}
 

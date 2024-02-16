@@ -1,415 +1,464 @@
-use std::rc::Rc;
-
-use crate::core::*;
+use crate::ast::{ArrowKind, Ast, Literal};
+use crate::lex::{lex, Keyword, LToken, NewLine, Symbol, Token};
+use crate::located::{Pos, Range};
 use crate::name::Name;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Error {
-    TermNotFound,
-    UnclosedParenthesis,
-    ExpectedTypeAnnotation { found: Term },
-    ExpectedNameInParameter { found: Term },
+    TermNotFound(Pos),
+    // TODO
+    UnclosedParenthesis {
+        open: Pos,
+        expected_close: Pos,
+        found_close: Option<Pos>,
+    },
 }
 
-#[derive(Debug, Clone, Copy)]
-pub enum Keyword {
-    Prop,
-    Type,
-}
-
-#[derive(Debug)]
-enum IdentifierOrKeyword<'source> {
-    Identifier(&'source str),
-    Keyword(Keyword),
-}
-
-struct State<'source> {
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TokenReader<'source> {
+    tokens: Vec<LToken<'source>>,
     index: usize,
-    line: usize,
-    column: usize,
-    indent: Vec<usize>,
-    /// Hold a phatom reference to the source code lifetime. Why? Because we 
-    /// might hold actual references to the source code in the future.
-    source_marker: std::marker::PhantomData<&'source str>,
+    indent: usize,
+    parens_depth: usize,
+    errors: Vec<Error>,
 }
 
-impl<'source> IdentifierOrKeyword<'source> {
-    #[allow(dead_code)]
-    pub fn ident(self) -> Result<&'source str, Keyword> {
-        match self {
-            Self::Identifier(string) => Ok(string),
-            Self::Keyword(keyword) => Err(keyword),
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn keyword(self) -> Result<Keyword, &'source str> {
-        match self {
-            Self::Keyword(keyword) => Ok(keyword),
-            Self::Identifier(string) => Err(string),
-        }
-    }
-}
-
-impl<'source> State<'source> {
-    pub fn start() -> Self {
+impl<'source> TokenReader<'source> {
+    pub fn new(tokens: Vec<LToken<'source>>) -> Self {
         Self {
+            tokens,
             index: 0,
-            line: 1,
-            column: 1,
-            indent: Vec::new(),
-            source_marker: std::marker::PhantomData,
+            indent: 0,
+            parens_depth: 0,
+            errors: Vec::new(),
         }
     }
 
-    /// Returns the indent depth of the current line.
-    fn current_indent(&self) -> usize {
-        self.indent.last().cloned().unwrap_or(0)
+    pub fn current(&self) -> Option<LToken<'source>> {
+        self.tokens.get(self.index).cloned()
+    }
+
+    pub fn pop(&mut self) -> Option<LToken<'source>> {
+        let ret = self.current();
+        self.index += 1;
+        // Update the indent tracker.
+        let token: Option<Token> = ret.as_deref().cloned();
+        if let Some(Token::NewLine(NewLine::NewLine { indent })) = token {
+            self.indent = indent;
+        } else if let Some(Token::Symbol(Symbol::CloseParen)) = token {
+            self.parens_depth -= 1;
+        } else if let Some(Token::Symbol(Symbol::OpenParen)) = token {
+            self.parens_depth += 1;
+        }
+        // Update the parens tracker.
+        ret
+    }
+
+    pub fn pop_token(&mut self) -> Option<Token<'source>> {
+        self.pop().map(|t| t.0)
+    }
+
+    pub fn curr_token(&self) -> Option<Token<'source>> {
+        self.current().map(|t| t.0)
+    }
+
+    pub fn get_range(&self, index: usize) -> Range {
+        self.tokens
+            .get(index)
+            .map(|t| t.1)
+            .or(self.tokens.last().map(|t| (t.1 .1..t.1 .1).into()))
+            .unwrap_or((0..0).into())
+    }
+
+    pub fn curr_range(&self) -> Range {
+        self.get_range(self.index)
+    }
+
+    pub fn prev_range(&self) -> Range {
+        self.get_range(self.index.saturating_sub(1))
+    }
+
+    pub fn pop_token_eq<'a>(&mut self, token: impl Into<Token<'a>>) -> bool {
+        if self.curr_token() == Some(token.into()) {
+            self.pop_token();
+            true
+        } else {
+            false
+        }
+    }
+
+    pub fn pop_token_string(&mut self) -> Option<&'source str> {
+        if let Some(Token::String(string)) = self.curr_token() {
+            self.pop_token();
+            Some(string)
+        } else {
+            None
+        }
+    }
+
+    pub fn pop_token_ident(&mut self) -> Option<&'source str> {
+        if let Some(Token::Ident(ident)) = self.curr_token() {
+            self.pop_token();
+            Some(ident)
+        } else {
+            None
+        }
+    }
+
+    pub fn pop_token_int(&mut self) -> Option<i32> {
+        if let Some(Token::Int(int)) = self.curr_token() {
+            self.pop_token();
+            Some(int)
+        } else {
+            None
+        }
+    }
+
+    pub fn pop_token_newline(&mut self) -> Option<NewLine> {
+        if let Some(Token::NewLine(newline)) = self.curr_token() {
+            self.pop_token();
+            Some(newline)
+        } else {
+            None
+        }
+    }
+
+    fn pop_indent_helper(&mut self, predicate: impl FnOnce(usize, usize) -> bool) -> bool {
+        let start_indent = self.indent;
+        let init_state = self.clone();
+        let ret = self
+            .pop_token_newline()
+            .map(|newline| match newline {
+                NewLine::NewLine { indent } => predicate(indent, start_indent),
+                NewLine::EmptyLine => self.pop_indent_helper(predicate),
+            })
+            .unwrap_or(false);
+        if !ret {
+            *self = init_state;
+        }
+        ret
+    }
+
+    pub fn pop_indent_in(&mut self) -> bool {
+        self.pop_indent_helper(|indent, start_indent| indent > start_indent)
+    }
+
+    pub fn pop_indent_same(&mut self, to_indent: usize) -> bool {
+        self.pop_indent_helper(|indent, _| indent == to_indent)
+    }
+
+    #[allow(dead_code)]
+    pub fn pop_indent(&mut self) -> bool {
+        self.pop_indent_helper(|_, _| true)
+    }
+
+    pub fn error(&mut self, error: Error) {
+        self.errors.push(error);
     }
 }
 
 /// Parses a program from a source code string.
-pub fn parse(source: &str) -> Result<Term, Vec<Error>> {
-    let mut state = State::start();
+pub fn parse(source: &str) -> Result<Ast, Vec<Error>> {
+    let mut tokens = TokenReader::new(lex(source));
+
+    // Read until start of term line.
+    tokens.pop_indent_same(0);
 
     // For now just parse a single term.
-    skip_whitespace(source, &mut state);
-    let the_term = term(source, &mut state)?;
-    Ok(the_term)
+    let the_term = term(&mut tokens);
+    if tokens.errors.is_empty() {
+        Ok(the_term)
+    } else {
+        Err(tokens.errors)
+    }
 }
 
-type ParseResult<T> = Result<T, Vec<Error>>;
+fn match_term(tokens: &mut TokenReader) -> Ast {
+    let start_indent = tokens.indent;
 
-fn res_combine<T, U>(a: ParseResult<T>, b: ParseResult<U>) -> ParseResult<(T, U)> {
-    match (a, b) {
-        (Ok(a), Ok(b)) => Ok((a, b)),
-        (Err(e), Ok(_)) | (Ok(_), Err(e)) => Err(e),
-        (Err(mut a), Err(b)) => {
-            a.extend(b);
-            Err(a)
-        }
+    let input = term(tokens);
+
+    if !tokens.pop_token_eq(Keyword::With) {
+        todo!("Fail here.")
     }
+
+    // Parse the match cases.
+    if !tokens.pop_token_eq(Symbol::OpenCurly) {
+        todo!("Fail here.")
+    }
+
+    if !tokens.pop_indent_in() {
+        todo!("Fail here.")
+    }
+
+    let inner_indent = tokens.indent;
+
+    let mut cases = Vec::new();
+
+    while {
+        let pattern = atom(tokens).unwrap_or_else(|| todo!("Fail here."));
+        if !tokens.pop_token_eq(Symbol::FatArrow) {
+            todo!("Fail here.")
+        }
+        let result = term(tokens);
+        cases.push((pattern, result));
+        tokens.pop_indent_same(inner_indent)
+    } {}
+
+    if !tokens.pop_indent_same(start_indent) {
+        dbg!(&tokens.tokens[tokens.index..]);
+        todo!("Fail here.")
+    }
+
+    if !tokens.pop_token_eq(Symbol::CloseCurly) {
+        todo!("Fail on no curly.")
+    }
+
+    Ast::Match(input.into(), cases)
 }
 
 /// Parses a term from the current position.
-fn term<'source>(source: &'source str, state: &mut State<'source>) -> Result<Term, Vec<Error>> {
+fn term(tokens: &mut TokenReader) -> Ast {
+    let start = tokens.curr_range().0;
+
+    if tokens.pop_token_eq(Keyword::Match) {
+        return match_term(tokens);
+    }
+
     // First, parse an atom.
-    let first_atom = atom(source, state)
-        .transpose()
-        .ok_or(vec![Error::TermNotFound])?;
-    skip_whitespace(source, state);
+    let first_atom = match atom(tokens) {
+        Some(tokens) => tokens,
+        None => {
+            tokens.error(Error::TermNotFound(start));
+            return Ast::Error;
+        }
+    };
 
-    if pop_eq_str(source, state, "->") {
-        skip_whitespace(source, state);
-        // TODO: Make a ParseResult type.
-        let ret = term(source, state);
-        let (first_atom, ret) = res_combine(first_atom, ret)?;
-        return Ok(Term::Binder {
-            binder: BinderKind::Pi,
-            param_name: "_".into(),
-            ty: Rc::new(first_atom),
-            body: Rc::new(ret),
-        });
+    if tokens.pop_token_eq(Symbol::FatArrow) {
+        // Allow indenting in!
+        tokens.pop_indent_in();
+        let ret = term(tokens);
+        return Ast::Arrow(ArrowKind::Value, first_atom.into(), ret.into());
     }
 
-    if pop_eq_str(source, state, "=>") {
-        skip_whitespace(source, state);
-        let ret = term(source, state);
-        let (first_atom, ret) = res_combine(first_atom, ret)?;
-        let (param_name, param_type) = match &first_atom {
-            Term::TypeAnnotation(param_expr, param_type) => match param_expr.as_ref() {
-                Term::Var(param_name) => (param_name.clone(), param_type.clone()),
-                _ => {
-                    return Err(vec![Error::ExpectedNameInParameter {
-                        found: first_atom,
-                    }])
-                }
-            },
-            _ => {
-                return Err(vec![Error::ExpectedTypeAnnotation {
-                    found: first_atom,
-                }])
-            }
-        };
-        return Ok(Term::Binder {
-            binder: BinderKind::Lam,
-            param_name,
-            ty: param_type,
-            body: Rc::new(ret),
-        });
+    if tokens.pop_token_eq(Symbol::ThinArrow) {
+        // Allow indenting in!
+        tokens.pop_indent_in();
+        let ret = term(tokens);
+        return Ast::Arrow(ArrowKind::Type, first_atom.into(), ret.into());
     }
 
-    if pop_eq(source, state, ':') {
-        skip_whitespace(source, state);
-        let typ = term(source, state);
-        let (first_atom, typ) = res_combine(first_atom, typ)?;
-        return Ok(Term::TypeAnnotation(first_atom.into(), typ.into()))
+    if tokens.pop_token_eq(Token::Symbol(Symbol::Colon)) {
+        // Allow indenting in!
+        tokens.pop_indent_in();
+        let typ = term(tokens);
+        return Ast::TypeAnnotation(first_atom.into(), typ.into());
     }
 
     // Then, parse a list of more atoms!
-    let mut applications: Result<Vec<Term>, Vec<Error>> = match &first_atom {
-        Ok(_) => Ok(Vec::new()),
-        Err(errors) => Err(errors.clone()),
-    };
-
-    loop {
-        let next_atom = atom(source, state);
-        match (next_atom, &mut applications) {
-            (Ok(None), _) => break,
-            (Ok(Some(atom)), Ok(applications)) => {
-                applications.push(atom);
-            }
-            (Ok(Some(_)), Err(_)) => (),
-            (Err(next_errors), Err(errors)) => {
-                errors.extend(next_errors);
-            }
-            (Err(errors), applications @ Ok(_)) => {
-                *applications = Err(errors);
-            }
+    let second_atom = atom(tokens);
+    let mut rest_of_applications = vec![];
+    if second_atom.is_some() {
+        while let Some(next_atom) = atom(tokens) {
+            rest_of_applications.push(next_atom);
         }
-        skip_whitespace(source, state);
     }
 
-    applications.map(|applications| {
-        let atom = first_atom.unwrap();
-        applications
-            .into_iter()
-            .fold(atom, |acc, atom| Term::Appl(Rc::new(acc), Rc::new(atom)))
-    })
+    // Combine the atoms into a single term.
+    let application_term = match second_atom {
+        Some(second_atom) => Ast::Appl(first_atom.into(), second_atom.into(), rest_of_applications),
+        None => first_atom,
+    };
+
+    // Is this an indented application expression?
+    if tokens.pop_indent_in() {
+        let start_indent = tokens.indent;
+        let mut rest_of_applications = Vec::new();
+        let first_argument = term(tokens);
+        while tokens.pop_indent_same(start_indent) {
+            let next_argument = term(tokens);
+            rest_of_applications.push(next_argument);
+        }
+
+        return Ast::Appl(
+            application_term.into(),
+            first_argument.into(),
+            rest_of_applications,
+        );
+    }
+
+    // Is this a assign expression?
+    if tokens.pop_token_eq(Symbol::Equal) {
+        let start_indent = tokens.indent;
+        tokens.pop_indent_in(); // Fine if this fails.
+        let rhs = term(tokens);
+        if !tokens.pop_indent_same(start_indent) {
+            dbg!(&tokens.tokens[tokens.index..]);
+            todo!("error: expected expression with same indent");
+        }
+        let ret = term(tokens);
+        return Ast::Let(application_term.into(), rhs.into(), ret.into());
+    }
+
+    application_term
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Commas {
+    HasCommas,
+    NoCommas,
+}
+
+/// Parses a list of terms seperated by commas.
+/// The list can be seperated on both sides.
+fn parse_list<'source>(
+    tokens: &mut TokenReader<'source>,
+    end: impl Copy + Into<Token<'source>>,
+) -> (Vec<Ast>, Commas) {
+    // Edge case: Empty list.
+    if tokens.pop_token_eq(end) {
+        return (Vec::new(), Commas::NoCommas);
+    }
+
+    let mut ret = Vec::new();
+    let mut commas = Commas::NoCommas;
+
+    let out_indent = tokens.indent;
+    tokens.pop_indent_in();
+    let in_indent = tokens.indent;
+
+    // TODO: Allow elm style lists.
+    loop {
+        // Parse a term.
+        ret.push(term(tokens));
+        // Expect a potential comma.
+        let seen_comma = tokens.pop_token_eq(Symbol::Comma);
+        if seen_comma {
+            commas = Commas::HasCommas;
+        }
+        // After wards, if we indent out, we should reach the end.
+        if tokens.pop_indent_same(out_indent) {
+            if !tokens.pop_token_eq(end) {
+                todo!("Put error here")
+            }
+            break (ret, commas);
+        }
+        // Or if we reach the end token.
+        if tokens.pop_token_eq(end) {
+            break (ret, commas);
+        }
+
+        // If this is not the end of the list, and there was no comma, then
+        // the list is not written correctly.
+        if !seen_comma {
+            todo!("Error");
+        }
+
+        tokens.pop_indent_same(in_indent);
+    }
 }
 
 /// Parses an atom from the current position.
-fn atom<'source>(
-    source: &'source str,
-    state: &mut State<'source>,
-) -> Result<Option<Term>, Vec<Error>> {
-    skip_whitespace(source, state);
+fn atom(tokens: &mut TokenReader) -> Option<Ast> {
+    let start = tokens.get_range(tokens.index).0;
 
-    if pop_eq(source, state, '"') {
-        let mut string = String::new();
-        while let Some(c) = peek(source, state) {
-            line_pop(source, state);
-            if c == '"' {
-                break;
+    if let Some(literal) = literal(tokens) {
+        return Some(Ast::Literal(literal, (start..tokens.prev_range().1).into()));
+    }
+
+    if tokens.pop_token_eq(Symbol::OpenParen) {
+        let (mut terms, commas) = parse_list(tokens, Symbol::CloseParen);
+
+        // Just parenthesis with commas and a single element is not a tuple.
+        if Commas::NoCommas == commas && terms.len() == 1 {
+            return Some(terms.pop().unwrap());
+        }
+
+        // Every other case is a tuple.
+        return Some(Ast::Tuple(terms));
+
+        /*
+        if !tokens.pop_token_eq(Symbol::CloseParen) {
+            let expected_close = tokens.get_range(tokens.index).0;
+            // Try to find where the parenthesis is closed.
+            while !matches!(
+                tokens.curr_token(),
+                None | Some(Token::Symbol(Symbol::CloseParen))
+            ) {
+                tokens.pop_token();
             }
-            string.push(c);
+            let found_close = tokens.current().map(|t| t.1 .1);
+            tokens.error(Error::UnclosedParenthesis {
+                open: start,
+                expected_close,
+                found_close,
+            });
         }
-        return Ok(Some(Term::StringLiteral(string)));
+        */
     }
 
-    if pop_eq(source, state, '(') {
-        skip_whitespace(source, state);
-        let term = term(source, state);
-        skip_whitespace(source, state);
-        if !skip_until(source, state, ')') {
-            return Err(vec![Error::UnclosedParenthesis]);
-        }
-        term.map(Some)
-    } else if let Some(ident) = identifier_or_keyword(source, state) {
-        match ident {
-            IdentifierOrKeyword::Identifier(ident) => Ok(Some(Term::Var(Name::from_str(ident)))),
-            IdentifierOrKeyword::Keyword(keyword) => match keyword {
-                Keyword::Prop => Ok(Some(Term::Prop)),
-                Keyword::Type => Ok(Some(Term::Type)),
-            },
-        }
-    } else {
-        Ok(None)
-    }
-}
-
-fn identifier_or_keyword<'source>(
-    source: &'source str,
-    state: &mut State,
-) -> Option<IdentifierOrKeyword<'source>> {
-    fn identifier<'source>(source: &'source str, state: &mut State) -> Option<&'source str> {
-        fn identifier_start(c: char) -> bool {
-            c.is_ascii_alphabetic() || c == '_'
-        }
-
-        fn identifier_continue(c: char) -> bool {
-            c.is_ascii_alphanumeric() || c == '_' || c == '-'
-        }
-
-        if !peek(source, state).map(identifier_start).unwrap_or(false) {
-            return None;
-        }
-
-        let start = state.index;
-        loop {
-            let cont = peek(source, state)
-                .map(identifier_continue)
-                .unwrap_or(false);
-            if !cont {
-                break;
-            }
-            pop(source, state);
-        }
-
-        Some(source[start..state.index].into())
+    if tokens.pop_token_eq(Symbol::OpenCurly) {
+        let (terms, _) = parse_list(tokens, Symbol::CloseCurly);
+        return Some(Ast::TupleType(terms));
     }
 
-    use IdentifierOrKeyword::{Identifier as I, Keyword as K};
-    Some(
-        match identifier(source, state)? {
-            "prop" => K(Keyword::Prop),
-            "type" => K(Keyword::Type),
-            ident => I(ident),
-        },
-    )
-}
-
-/// Returns the rest of the string from the current position.
-fn rest<'source>(source: &'source str, state: &mut State) -> &'source str {
-    &source[state.index..]
-}
-
-/// Returns the next character from the current position, or none if we are
-/// at the end of the string.
-fn peek(source: &str, state: &mut State) -> Option<char> {
-    rest(source, state).chars().next()
-}
-
-/// Returns the current character in the line from the current position, or
-/// none if we are at the end of the line.
-fn line_peek(source: &str, state: &mut State) -> Option<char> {
-    rest(source, state).lines().next()?.chars().next()
-}
-
-/// Are we at the end of the code?
-#[allow(dead_code)]
-fn is_eof(source: &str, state: &mut State) -> bool {
-    rest(source, state).is_empty()
-}
-
-/// Pop a character from the current line if there is one, else return none.
-fn line_pop(source: &str, state: &mut State) -> Option<char> {
-    // Is there a character?
-    line_peek(source, state).map(|ch| {
-        // Advance the index.
-        state.index += 1;
-        state.column += 1;
-        ch
-    })
-}
-
-/// Same as `pop`, but ignores indent.
-fn pop_no_indent(source: &str, state: &mut State) -> Option<char> {
-    // Is there a character?
-    if let Some(ch) = peek(source, state) {
-        // Advance the index.
-        state.index += 1;
-        // Is this a newline?
-        if ch == '\n' {
-            // Reset counters.
-            state.column = 1;
-            state.line += 1;
-        } else {
-            state.column += 1;
-        }
-        Some(ch)
-    } else {
-        None
-    }
-}
-
-/// Pops while the current character is whitespace. Does not pop newlines.
-//fn skip_whitespace(source: &str, state: &mut State) {
-fn skip_whitespace1(source: &str, state: &mut State) {
-    loop {
-        if !line_peek(source, state)
-            .map(char::is_whitespace)
-            .unwrap_or(false)
-        {
-            break;
-        }
-        line_pop(source, state);
-    }
-}
-
-/// Pops the current character from the source. If it is a newline it will
-/// also advance over the whitespace on the next line and updates indent.
-fn pop(source: &str, state: &mut State) -> Option<char> {
-    let ch = pop_no_indent(source, state)?;
-    if ch == '\n' {
-        // Skip over the spaces, and count to get the indent.
-        let start = state.index;
-        skip_whitespace1(source, state);
-        let end = state.index;
-
-        // Get the new indent.
-        let new_indent = {
-            end - start +
-            // Also add the amount of tabs, times three, because each tab
-            // is (assumed to be) 4 characters long.
-            3 * source[start..end].chars()
-                .filter(|&ch| ch == '\t')
-                .count()
-        };
-
-        // Update the indent list.
-        while new_indent < state.current_indent() {
-            state.indent.pop();
-        }
-        if state.current_indent() != new_indent {
-            state.indent.push(new_indent);
-        }
-    }
-    Some(ch)
-}
-
-/// Pops the current character from the source if it is equal to the given
-/// character. Returns true if it was equal, false otherwise.
-fn pop_eq(source: &str, state: &mut State, ch: char) -> bool {
-    if peek(source, state) == Some(ch) {
-        pop(source, state);
-        true
-    } else {
-        false
-    }
-}
-
-/// Skips characters until the given character is found. Also skips over
-/// that character. Returns true if the character was found, false otherwise.
-fn skip_until(source: &str, state: &mut State, ch: char) -> bool {
-    loop {
-        match pop(source, state) {
-            Some(ch2) if ch2 == ch => return true,
-            Some(_) => (),
-            None => return false,
-        }
-    }
-}
-
-// fn skip_whitespace_and_newlines(source: &str, state: &mut State) {
-fn skip_whitespace(source: &str, state: &mut State) {
-    loop {
-        let ch = peek(source, state);
-        // Stop if not whitespace or eol.
-        if !ch.map(char::is_whitespace).unwrap_or(true) {
-            break;
-        }
-        if is_eof(source, state) {
-            break;
-        }
-        pop(source, state);
-    }
-}
-
-fn pop_eq_str(source: &str, state: &mut State, string: &str) -> bool {
-    let end_index = string.len() + state.index;
-
-    if !rest(source, state).starts_with(string) {
-        return false;
-    }
-    while end_index > state.index {
-        let res = line_pop(source, state);
-        // If EOL is reached, exit early (Otherwise it won't exit at
-        // all).
-        if res.is_none() {
-            return false;
-        }
+    if let Some(ident) = tokens.pop_token_ident() {
+        return Some(Ast::Var(Name::from_str(ident), tokens.prev_range()));
     }
 
-    true
+    None
+}
+
+fn literal(tokens: &mut TokenReader) -> Option<Literal> {
+    if let Some(string) = tokens.pop_token_string() {
+        return Some(Literal::String(Name::from_str(string)));
+    }
+
+    if let Some(int) = tokens.pop_token_int() {
+        return Some(Literal::Int(int));
+    }
+
+    if tokens.pop_token_eq(Token::Keyword(Keyword::Type)) {
+        return Some(Literal::Type);
+    }
+
+    if tokens.pop_token_eq(Token::Keyword(Keyword::Prop)) {
+        return Some(Literal::Prop);
+    }
+
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use indoc::indoc;
+
+    fn r(x: impl Into<Range>) -> Range {
+        x.into()
+    }
+
+    #[test]
+    fn test_1() {
+        let source = indoc! {r#"
+            (x: str) => string-append x "!"
+        "#};
+        assert_eq!(
+            parse(source),
+            Ok(Ast::Arrow(
+                ArrowKind::Value,
+                Ast::TypeAnnotation(
+                    Ast::Var("x".into(), r(1..2)).into(),
+                    Ast::Var("str".into(), r(4..7)).into()
+                )
+                .into(),
+                Ast::Appl(
+                    Ast::Var("string-append".into(), r(12..25)).into(),
+                    Ast::Var("x".into(), r(26..27)).into(),
+                    vec![Ast::Literal(Literal::String("!".into()), r(28..31))]
+                )
+                .into(),
+            ))
+        );
+    }
 }

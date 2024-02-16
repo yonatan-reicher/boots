@@ -1,0 +1,5 @@
+f = (x: {str, str, str}) => match x with {
+    (a, b, c) => string-append a b
+    (a, b, c) => c
+}
+f

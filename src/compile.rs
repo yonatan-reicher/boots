@@ -1,8 +1,8 @@
 use crate::c;
 use crate::c::combine_traits::*;
-use crate::core::{BinderKind, PTerm, Term, TypeContext};
 use crate::global::*;
 use crate::name::Name;
+use crate::term::{infer, normalize, ArrowKind, Literal, PTerm, Pattern, Term, TypeContext};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -31,6 +31,7 @@ enum NameOptions {
     Drop,
     /// For variables pointing to a generic closure.
     ClosureHeadType,
+    TupleType,
 }
 
 impl NameGen {
@@ -56,8 +57,16 @@ impl NameOptions {
             Impl => "impl",
             Drop => "drop",
             ClosureHeadType => "closureHead",
+            TupleType => "tuple",
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct ExprRet {
+    c_name: Name,
+    c_type: c::PTypeExpr,
+    n_type: PTerm,
 }
 
 /// A mapping from a C-Var name to a C-Var type and it's N-Var name.
@@ -77,12 +86,23 @@ struct Closure {
 
 type FunctionCTypes = HashMap<(PTerm, PTerm), Name>;
 
+type TupleCTypes = HashMap<PTerm, Tuple>;
+
+#[derive(Debug, Clone)]
+struct Tuple {
+    c_type_name: Name,
+    make_name: Name,
+    drop_name: Name,
+    types: Vec<(PTerm, c::PTypeExpr)>,
+}
+
 #[derive(Debug, Default)]
 struct Context {
     c_vars: CVars,
     n_vars: TypeContext,
     closures: Closures,
     function_c_types: FunctionCTypes,
+    tuple_c_types: TupleCTypes,
     name_gen: NameGen,
 }
 
@@ -99,28 +119,21 @@ impl Context {
 /// name) and the declarations.
 fn compile_closure_declarations(
     closure: &Closure,
-    name_gen: &mut NameGen,
-) -> (Name, [c::TopLevelDeclaration; 5]) {
+    con: &mut Context,
+) -> [c::TopLevelDeclaration; 5] {
     use c::TopLevelDeclaration::Function;
 
     let struct_ptr_type: c::PTypeExpr = closure.struct_name.clone().type_var().ptr().into();
 
-    (
-        closure.struct_name.clone(), // Currently, only forward declare the struct name.
-        [
-            // Struct.
-            closure_struct(closure, struct_ptr_type.clone()),
-            // Function.
-            Function(closure_impl_function(closure)),
-            Function(closure_call_function(closure, struct_ptr_type.clone())),
-            Function(closure_drop_function(
-                closure,
-                struct_ptr_type.clone(),
-                name_gen,
-            )),
-            Function(closure_make_function(closure, struct_ptr_type)),
-        ],
-    )
+    [
+        // Struct.
+        closure_struct(closure, struct_ptr_type.clone()),
+        // Function.
+        Function(closure_impl_function(closure)),
+        Function(closure_call_function(closure, struct_ptr_type.clone())),
+        Function(closure_drop_function(closure, struct_ptr_type.clone(), con)),
+        Function(closure_make_function(closure, struct_ptr_type)),
+    ]
 }
 
 // TODO: Get rid of `closure_ptr_type` parameter, and this function as a whole.
@@ -160,7 +173,7 @@ fn closure_struct(closure: &Closure, struct_ptr_type: c::PTypeExpr) -> c::TopLev
         (closure_drop_type().into(), "drop".into()),
     ];
     fields.extend(captured_values_parameters.iter().cloned());
-    c::TopLevelDeclaration::Struct(closure.struct_name.clone(), fields)
+    c::TopLevelDeclaration::Struct(closure.struct_name.clone(), Some(fields))
 }
 
 fn closure_impl_function(closure: &Closure) -> c::Function {
@@ -253,7 +266,7 @@ fn closure_make_function(closure: &Closure, struct_ptr_type: c::PTypeExpr) -> c:
 fn closure_drop_function(
     closure: &Closure,
     ptr_type: c::PTypeExpr,
-    name_gen: &mut NameGen,
+    con: &mut Context,
 ) -> c::Function {
     let void_self = "void_self";
     let self_ = "self";
@@ -277,12 +290,12 @@ fn closure_drop_function(
                     .captured_variables_types
                     .iter()
                     .flat_map(|(field_name, field_type, field_type_expr)| {
-                        let temp_name = name_gen.next(NameOptions::Var);
-                        [self_
+                        let temp_name = con.name_gen.next(NameOptions::Var);
+                        vec![self_
                             .var()
                             .arrow(field_name.clone())
                             .variable(temp_name.clone(), field_type_expr.clone())]
-                        .extend_pipe(compile_drop(temp_name, field_type))
+                        .extend_pipe(compile_drop(temp_name, field_type, con))
                     })
                     // And clean up the memory holding the closure's struct!
                     .chain(["free".var().call([self_.var()]).stmt()])
@@ -293,32 +306,34 @@ fn closure_drop_function(
     }
 }
 
-fn compile_clone(var_c_name: Name, var_n_type: &Term) -> (c::Block, Name) {
-    (
-        match var_n_type {
-            Term::Binder {
-                binder: BinderKind::Pi,
-                ..
-            } => vec![var_c_name.clone().var().arrow("rc").inc().stmt()],
-            Term::Str => {
-                vec!["cloneStr".var().call([var_c_name.clone().var()]).stmt()]
-            }
-            _ => vec![],
-        },
-        var_c_name,
-    )
+fn compile_clone(var_c_name: Name, var_n_type: &Term) -> c::Block {
+    match var_n_type {
+        Term::Arrow {
+            kind: ArrowKind::Type,
+            ..
+        } => vec![var_c_name.clone().var().arrow("rc").inc().stmt()],
+        Term::Literal(Literal::Str) => {
+            vec!["cloneStr".var().call([var_c_name.clone().var()]).stmt()]
+        }
+        _ => vec![],
+    }
 }
 
-fn compile_drop(var_name: Name, var_type: &Term) -> c::Block {
-    let var = var_name.var();
+fn compile_drop(var_c_name: Name, var_type: &Term, con: &Context) -> c::Block {
+    let var = var_c_name.var();
     let drop = var.clone().arrow("drop");
     match var_type {
-        Term::Binder {
-            binder: BinderKind::Pi,
+        Term::Arrow {
+            kind: ArrowKind::Type,
             ..
         } => vec![drop.call([var]).stmt()],
-        Term::Str => vec!["dropStr".var().call([var]).stmt()],
-        _ => vec![],
+        Term::Literal(Literal::Str) => vec!["dropStr".var().call([var]).stmt()],
+        Term::TupleType(_) => {
+            let tuple = &con.tuple_c_types[var_type];
+
+            vec![tuple.drop_name.clone().var().call([var]).stmt()]
+        }
+        _ => todo!(),
     }
 }
 
@@ -345,8 +360,8 @@ fn compile_let(name: Name, term: PTerm, body: PTerm, context: &mut Context) -> (
 */
 
 fn function_c_type_declaration(
-    arg_type: &Term,
-    ret_type: &Term,
+    arg_type: &PTerm,
+    ret_type: &PTerm,
     name: Name,
     context: &mut Context,
 ) -> c::TopLevelDeclaration {
@@ -367,12 +382,62 @@ fn function_c_type_declaration(
             ("int".type_var().into(), "rc".into()),
             (call_type_expr.into(), "call".into()),
             (drop_type_expr.into(), "drop".into()),
-        ],
+        ]
+        .pipe(Some),
     )
 }
 
-pub fn compile(term: PTerm) -> c::Program {
-    let term_type = term.infer_type().expect("Still no error handling...");
+fn tuple_field_name(i: usize) -> Name {
+    Name::from(format!("field_{i}"))
+}
+
+fn compile_tuple_drop(tuple: &Tuple, con: &mut Context) -> c::Function {
+    let self_name: Name = "self".into();
+    c::Function {
+        name: tuple.drop_name.clone(),
+        parameters: vec![(
+            tuple.c_type_name.clone().type_var().into(),
+            self_name.clone(),
+        )],
+        return_type: "void".type_var().into(),
+        body: tuple
+            .types
+            .iter()
+            .enumerate()
+            .flat_map(|(i, (n_type, c_type))| {
+                let field_name = tuple_field_name(i);
+                let temp = con.name_gen.next(NameOptions::Var);
+
+                let decl_temp = self_name
+                    .clone()
+                    .var()
+                    .dot(field_name)
+                    .variable(temp.clone(), c_type.clone());
+
+                vec![decl_temp].extend_pipe(compile_drop(temp, n_type, con))
+            })
+            .collect::<Vec<_>>()
+            .pipe(Some),
+    }
+}
+
+fn compile_tuple_declaration(c: &Tuple, con: &mut Context) -> [c::TopLevelDeclaration; 2] {
+    [
+        c::TopLevelDeclaration::Struct(
+            c.c_type_name.clone(),
+            c.types
+                .iter()
+                .enumerate()
+                .map(|(i, (_, c_type))| (c_type.clone(), tuple_field_name(i)))
+                .collect::<Vec<_>>()
+                .pipe(Some),
+        ),
+        c::TopLevelDeclaration::Function(compile_tuple_drop(c, con)),
+    ]
+}
+
+pub fn compile(term: &PTerm) -> c::Program {
+    let term_type = infer(&term, &mut Default::default()).expect("Still no error handling...");
 
     let mut context = Context::default();
 
@@ -390,13 +455,11 @@ pub fn compile(term: PTerm) -> c::Program {
         body: Some(expr_prelude),
     };
 
-    let mut forward_declarations = Vec::<Name>::new();
     let mut declarations = Vec::<c::TopLevelDeclaration>::new();
 
     // Declare context.function_c_types.
     let function_c_types = context.function_c_types.clone();
     for ((arg_type, ret_type), name) in function_c_types {
-        forward_declarations.push(name.clone());
         declarations.push(function_c_type_declaration(
             &arg_type,
             &ret_type,
@@ -406,62 +469,167 @@ pub fn compile(term: PTerm) -> c::Program {
     }
 
     // Declare the closures.
-    for closure in &context.closures {
-        let (forward_declaration, declaration) =
-            compile_closure_declarations(closure, &mut context.name_gen);
-        forward_declarations.push(forward_declaration);
+    let closures = context.closures;
+    context.closures = Vec::new();
+    for closure in closures {
+        let declaration = compile_closure_declarations(&closure, &mut context);
         declarations.extend(declaration);
+    }
+
+    // Declare the tuples.
+    let tuples = context.tuple_c_types.values().cloned().collect::<Vec<_>>();
+    for tuple in tuples {
+        let struct_declarations = compile_tuple_declaration(&tuple, &mut context);
+        declarations.extend(struct_declarations);
     }
 
     // Add the main function.
     declarations.push(c::TopLevelDeclaration::Function(main));
 
-    // Combine the forward declarations and declarations.
-    let all_declarations = forward_declarations
-        .into_iter()
-        .map(|name| c::TopLevelDeclaration::Typedef(name.clone().struct_type_var(), name))
-        .chain(declarations.into_iter())
-        .collect();
-
     c::Program {
         includes: vec![c::Include::Quote("nessie.h".into())],
-        declarations: all_declarations,
+        declarations,
+    }
+}
+
+fn flatten<T>(iter: impl IntoIterator<Item = impl IntoIterator<Item = T>>) -> Vec<T> {
+    iter.into_iter().flatten().collect()
+}
+
+fn and_all(iter: impl IntoIterator<Item = c::Expr>) -> c::Expr {
+    iter.into_iter()
+        .reduce(|a, b| c::Expr::Binary(c::BinaryOp::And, Box::new(a), Box::new(b)))
+        .unwrap()
+}
+
+fn unzip3<T, U, V>(i: impl IntoIterator<Item = (T, U, V)>) -> (Vec<T>, Vec<U>, Vec<V>) {
+    let mut a = Vec::new();
+    let mut b = Vec::new();
+    let mut c = Vec::new();
+    for (x, y, z) in i {
+        a.push(x);
+        b.push(y);
+        c.push(z);
+    }
+    (a, b, c)
+}
+
+struct CompiledPattern {
+    prelude: c::Block,
+    cond: c::Expr,
+    bindings: Vec<(Name, ExprRet)>,
+}
+
+fn compile_string_eq(left: c::Expr, right: c::Expr) -> c::Expr {
+    "strcmp".var().call(vec![left, right]).eq(0.literal())
+}
+
+fn compile_pattern(pattern: &Pattern, input_var: &ExprRet, con: &mut Context) -> CompiledPattern {
+    match pattern {
+        Pattern::Var(name) => CompiledPattern {
+            prelude: vec![],
+            bindings: vec![(name.clone(), input_var.clone())],
+            cond: "true".var().into(),
+        },
+        Pattern::UnTuple(patterns) => {
+            let element_types = match input_var.n_type.as_ref() {
+                Term::TupleType(element_types) => element_types,
+                _ => panic!(),
+            };
+
+            // We know this tuple type has been compiled before so it must be in the map.
+            let tuple_c_type = con.tuple_c_types.get(&input_var.n_type).unwrap();
+
+            let mut prelude = Vec::new();
+
+            // Create a variable for each element type of the tuple type by
+            // creating a statement that access the input of the pattern.
+            let field_vars = element_types
+                .iter()
+                .enumerate()
+                .map(|(i, field_n_type)| {
+                    let field_name = tuple_field_name(i);
+                    let field_c_type = tuple_c_type.types[i].1.clone();
+                    let field_var_name = con.name_gen.next(NameOptions::Var);
+                    let field_var_decl = input_var
+                        .c_name
+                        .clone()
+                        .var()
+                        .dot(field_name)
+                        .variable(field_var_name.clone(), field_c_type.clone());
+                    let clone_field = compile_clone(field_var_name.clone(), field_n_type);
+
+                    prelude.push(field_var_decl);
+                    prelude.extend(clone_field);
+                    ExprRet {
+                        c_name: field_var_name,
+                        c_type: field_c_type,
+                        n_type: field_n_type.clone(),
+                    }
+                })
+                .collect::<Vec<_>>();
+
+            let (preludes, conds, bindings) = patterns
+                .iter()
+                .zip(field_vars)
+                .map(|(pat, field_var)| compile_pattern(pat, &field_var, con))
+                .map(
+                    |CompiledPattern {
+                         prelude,
+                         cond,
+                         bindings,
+                     }| (prelude, cond, bindings),
+                )
+                .pipe(unzip3);
+
+            CompiledPattern {
+                prelude: prelude.extend_pipe(flatten(preludes)),
+                cond: and_all(conds),
+                bindings: flatten(bindings),
+            }
+        }
+        Pattern::String(s) => {
+            CompiledPattern {
+                prelude: vec![],
+                bindings: vec![],
+                cond: compile_string_eq(input_var.c_name.clone().var(), s.clone().literal()),
+            }
+        }
     }
 }
 
 // TODO: Add `compile_clone` calls where appropriate. Where should they be added?
 //       - When a name returned from a `compile_expr` call is used more than once.
-fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
-    let term = Term::eval_or(term);
-    let term_type = term.infer_type_with_ctx(&mut con.n_vars).unwrap();
-    match term.as_ref() {
+fn compile_expr(term: &PTerm, con: &mut Context) -> (c::Block, ExprRet) {
+    let term = normalize(&term);
+    let term_type = infer(&term, &mut con.n_vars).unwrap();
+    let term_type_expr: c::PTypeExpr = compile_type_expr(&term_type, con).unwrap().into();
+
+    let (prelude, out_name) = match term.as_ref() {
         Term::Var(name) => {
             let (_, var_c_name) = con.c_vars[name].clone();
             let var_type = con.n_vars[name].clone();
-            compile_clone(var_c_name, &var_type)
+            (compile_clone(var_c_name.clone(), &var_type), var_c_name)
         }
         Term::Appl(func, arg) =>
         // Should first save the closure pointer (lhs) in a variable,
         // then pass it to it's .call field along with the argument (rhs!).
         {
-            let (func_perlude, func_var_name) = compile_expr(func.clone(), con);
-            let func_type = func.infer_type_with_ctx(&mut con.n_vars).unwrap();
-            let (arg_prelude, arg_var_name) = compile_expr(arg.clone(), con);
+            let (func_perlude, func_var) = compile_expr(func, con);
+            let (arg_prelude, arg_var) = compile_expr(arg, con);
 
             // Call the function object with the argument.
             let output_var_name = con.name_gen.next(NameOptions::Var);
-            let set_output = func_var_name
+            let set_output = func_var
+                .c_name
                 .clone()
                 .var()
                 .arrow("call")
-                .call([func_var_name.clone().var(), arg_var_name.var()])
-                .variable(
-                    output_var_name.clone(),
-                    compile_type_expr(&term_type, con).unwrap(),
-                );
+                .call([func_var.c_name.clone().var(), arg_var.c_name.var()])
+                .variable(output_var_name.clone(), term_type_expr.clone());
             // Dispose of the function. Don't dispose of the argument - the
             // function is responsible for that.
-            let drop_func_and_arg = compile_drop(func_var_name, &func_type);
+            let drop_func_and_arg = compile_drop(func_var.c_name, &func_var.n_type, con);
 
             (
                 func_perlude
@@ -471,8 +639,8 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
                 output_var_name,
             )
         }
-        Term::Binder {
-            binder: BinderKind::Lam,
+        Term::Arrow {
+            kind: ArrowKind::Value,
             param_name,
             ty,
             body,
@@ -482,21 +650,20 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
 
             // Infer the type of the body and get a type expression for it.
             let body_type = match term_type.as_ref() {
-                Term::Binder { body, .. } => body,
+                Term::Arrow { body, .. } => body,
                 _ => unreachable!(),
             };
             let body_c_type: c::PTypeExpr = compile_type_expr(body_type, con).unwrap().into();
 
             // Compile the body to an expression.
             let param_c_name = con.name_gen.next(NameOptions::Var);
-            let (body_prelude, body_ret_name) =
-                with_variable!(con.n_vars, (param_name, ty.clone()), {
-                    with_variable!(
-                        con.c_vars,
-                        (param_name, (param_c_ty.clone(), param_c_name.clone())),
-                        { compile_expr(body.clone(), con) }
-                    )
-                });
+            let (body_prelude, body_ret) = with_variable!(con.n_vars, (param_name, ty.clone()), {
+                with_variable!(
+                    con.c_vars,
+                    (param_name, (param_c_ty.clone(), param_c_name.clone())),
+                    { compile_expr(body, con) }
+                )
+            });
 
             // Get the captured variables.
             let captured_variables_types: Vec<(Name, PTerm, c::PTypeExpr)> =
@@ -523,7 +690,11 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
 
             let temp_var_name = con.name_gen.next(NameOptions::Var);
             let body = body_prelude
-                .extend_pipe_one(body_ret_name.variable(temp_var_name.clone(), body_c_type.clone()))
+                .extend_pipe_one(
+                    body_ret
+                        .c_name
+                        .variable(temp_var_name.clone(), body_c_type.clone()),
+                )
                 .extend_pipe_one(temp_var_name.var().ret());
 
             // Define a closure.
@@ -547,16 +718,138 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
             let set_output = closure_make_name
                 .var()
                 .call(captured_variable_calls)
-                .variable(
-                    output_var_name.clone(),
-                    compile_type_expr(&term_type, con).unwrap(),
-                );
+                .variable(output_var_name.clone(), term_type_expr.clone());
             // Return a variable referencing the function.
             (vec![set_output], output_var_name)
         }
-        Term::Prop => (vec![], "prop".into()),
-        Term::Type => (vec![], "type".into()),
-        Term::StringLiteral(string) => {
+        Term::Arrow {
+            kind: ArrowKind::Type,
+            ..
+        } => panic!(),
+        Term::Literal(literal) => compile_literal_expr(literal, con),
+        Term::TypeAnnotation(x, _) => {
+            compile_expr(x, con).pipe(|(prelude, var)| (prelude, var.c_name))
+        }
+        Term::Let(name, _, rhs, body) => {
+            let (rhs_prelude, var) = compile_expr(rhs, con);
+
+            let typ = infer(rhs, &mut con.n_vars).unwrap();
+
+            let (body_prelude, body_ret) =
+                with_variable!(con.n_vars, (name, typ.clone()), { compile_expr(body, con) });
+
+            let var_drop = compile_drop(var.c_name, &typ, con);
+
+            let prelude = rhs_prelude.extend_pipe(body_prelude).extend_pipe(var_drop);
+
+            (prelude, body_ret.c_name)
+        }
+        Term::Tuple(elements) => {
+            let mut prelude = Vec::new();
+            let name = con.name_gen.next(NameOptions::Var);
+
+            // Add element preludes and collect names.
+            let compiled_elements = elements
+                .iter()
+                .map(|x| {
+                    let (x_prelude, x_var) = compile_expr(x, con);
+                    prelude.extend(x_prelude);
+                    x_var.c_name.var()
+                })
+                .collect::<Vec<_>>();
+
+            // We can safely index this because we know the tuple type has been
+            // added to the context when compiling the type expression.
+            let tuple = con.tuple_c_types.get(&term_type).unwrap();
+
+            // Add tuple creation.
+            prelude.push(
+                tuple
+                    .make_name
+                    .clone()
+                    .var()
+                    .call(compiled_elements)
+                    .variable(name.clone(), term_type_expr.clone()),
+            );
+
+            (prelude, name)
+        }
+        Term::Match(input, cases) => {
+            let (input_prelude, input_var) = compile_expr(input, con);
+            let output_name = con.name_gen.next(NameOptions::Var);
+
+            let prelude = input_prelude
+                .extend_pipe_one(term_type_expr.clone().declare(output_name.clone(), None));
+
+            // Compile the match to a series of ifs nested in each other's else.
+            let match_block = cases
+                .iter()
+                .rev()
+                .fold(None, |next_case_compiled, (pattern, case)| {
+                    let compiled_pattern = compile_pattern(pattern, &input_var, con);
+                    let n_vars: Vec<_> = compiled_pattern
+                        .bindings
+                        .iter()
+                        .map(|(n, var)| (n, var.n_type.clone()))
+                        .collect();
+                    let c_vars: Vec<_> = compiled_pattern
+                        .bindings
+                        .iter()
+                        .map(|(n, var)| (n, (var.c_type.clone(), var.c_name.clone())))
+                        .collect();
+
+                    let (case_prelude, case_var) = with_variables!(con.n_vars, n_vars, {
+                        with_variables!(con.c_vars, c_vars, { compile_expr(case, con) })
+                    });
+
+                    let if_statement = c::Statement::If(
+                        compiled_pattern.cond.clone(),
+                        case_prelude.extend_pipe_one(c::Statement::Assign(
+                            output_name.clone().var(),
+                            case_var.c_name.var(),
+                        )),
+                        next_case_compiled,
+                    );
+
+                    let drop_vars: Vec<_> = compiled_pattern
+                        .bindings
+                        .iter()
+                        .flat_map(|(_, var)| compile_drop(var.c_name.clone(), &var.n_type, con))
+                        .collect();
+
+                    compiled_pattern
+                        .prelude
+                        .extend_pipe_one(if_statement)
+                        .extend_pipe(drop_vars)
+                        .pipe(Some)
+                })
+                .unwrap_or_else(Vec::new);
+
+            let drop_input = compile_drop(input_var.c_name.clone(), &input_var.n_type, con);
+
+            (
+                prelude.extend_pipe(match_block).extend_pipe(drop_input),
+                output_name,
+            )
+        }
+        Term::TupleType(_) => todo!(),
+    };
+
+    (
+        prelude,
+        ExprRet {
+            c_name: out_name.clone(),
+            c_type: term_type_expr,
+            n_type: term_type,
+        },
+    )
+}
+
+fn compile_literal_expr(literal: &Literal, con: &mut Context) -> (c::Block, Name) {
+    match literal {
+        Literal::Prop => (vec![], "prop".into()),
+        Literal::Type => (vec![], "type".into()),
+        Literal::String(string) => {
             let name = con.name_gen.next(NameOptions::Var);
             (
                 vec!["makeStr"
@@ -566,21 +859,26 @@ fn compile_expr(term: PTerm, con: &mut Context) -> (c::Block, Name) {
                 name,
             )
         }
-        Term::StringAppend => (
+        Literal::StringAppend => (
             vec!["appendStrClosure".var().arrow("rc").inc().stmt()],
             "appendStrClosure".into(),
         ),
-        _ => todo!(),
+        Literal::Str => todo!(),
     }
 }
 
-fn compile_type_expr(term: &Term, con: &mut Context) -> Result<c::TypeExpr, ()> {
-    let term = Term::eval_or(term.clone().into());
+fn compile_type_expr(term: &PTerm, con: &mut Context) -> Result<c::TypeExpr, ()> {
+    let term = normalize(term);
     match term.as_ref() {
-        Term::Prop => Ok(c::TypeExpr::Var("prop".into())),
-        Term::Type => Ok(c::TypeExpr::Var("type".into())),
-        Term::Binder {
-            binder: BinderKind::Pi,
+        Term::Literal(literal) => match literal {
+            Literal::Prop => "prop".pipe(Ok),
+            Literal::Type => "type".pipe(Ok),
+            Literal::Str => "str".pipe(Ok),
+            Literal::StringAppend | Literal::String(..) => Err(()),
+        }
+        .map(|var_name| var_name.type_var()),
+        Term::Arrow {
+            kind: ArrowKind::Type,
             param_name: _,
             ty,
             body,
@@ -597,13 +895,44 @@ fn compile_type_expr(term: &Term, con: &mut Context) -> Result<c::TypeExpr, ()> 
                 });
             Ok(name.type_var().ptr())
         }
-        Term::Str => "str".type_var().pipe(Ok),
-        _ => Err(()),
+        Term::TupleType(elements) => con
+            .tuple_c_types
+            .get(&term)
+            .map(|tuple| Ok(tuple.c_type_name.clone()))
+            .unwrap_or_else(|| {
+                let c_elements = elements
+                    .iter()
+                    .map(|n_type| {
+                        compile_type_expr(n_type, con)
+                            .map(Rc::new)
+                            .map(|c_type| (n_type.clone(), c_type))
+                    })
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                let name = con.name_gen.next(NameOptions::TupleType);
+                let make_name = con.name_gen.next(NameOptions::Make);
+
+                let tuple = Tuple {
+                    make_name,
+                    drop_name: con.name_gen.next(NameOptions::Drop),
+                    c_type_name: name.clone(),
+                    types: c_elements,
+                };
+
+                con.tuple_c_types.insert(term.clone(), tuple);
+
+                Ok(name)
+            })
+            .map(c::TypeExpr::Var),
+        Term::TypeAnnotation(_, _) => Err(()),
+        Term::Appl(_, _) => Err(()),
+        Term::Var(_) => Err(()),
+        Term::Let(_, _, _, _) => Err(()),
+        Term::Tuple(_) => Err(()),
+        Term::Arrow {
+            kind: ArrowKind::Value,
+            ..
+        } => Err(()),
+        Term::Match(_, _) => Err(()),
     }
 }
-/*
-            let body_type = body.infer_type_with_ctx(var_types).unwrap();
-            let free_vars = body.free_vars();
-            let ret_c_type = compile_type_expr() body.
-            funcs.add(free_vars, )
-*/

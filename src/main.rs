@@ -1,17 +1,22 @@
+mod ast;
+mod ast_to_term;
 mod c;
 mod cli;
 mod compile;
-mod core;
 mod engine;
 mod global;
+mod lex;
+mod located;
 mod name;
 mod parse;
+mod term;
+mod yes_no;
 
 use cli::{parse_args, Action, Cli};
 use std::fs;
 use std::io::{self, Result as IORes};
 
-use crate::core::{BinderKind, Term, PTerm};
+use crate::term::{ArrowKind, PTerm, Term, Literal};
 
 mod repl {
     use super::*;
@@ -60,23 +65,23 @@ fn main() -> IORes<()> {
 
     engine.add_variable(
         "string-append".into(),
-        Term::Binder {
-            binder: BinderKind::Pi,
+        Term::Arrow {
+            kind: ArrowKind::Type,
             param_name: "_".into(),
-            ty: Term::Str.into(),
-            body: Term::Binder {
-                binder: BinderKind::Pi,
+            ty: Literal::Str.into(),
+            body: Term::Arrow {
+                kind: ArrowKind::Type,
                 param_name: "_".into(),
-                ty: Term::Str.into(),
-                body: Term::Str.into(),
+                ty: Literal::Str.into(),
+                body: Literal::Str.into(),
             }
             .into(),
         }
         .into(),
-        Term::StringAppend.into(),
+        Literal::StringAppend.into(),
     );
 
-    engine.add_variable("str".into(), Term::Type.into(), Term::Str.into());
+    engine.add_variable("str".into(), Literal::Type.into(), Literal::Str.into());
 
     match action {
         Action::Eval { filename: None } => {
@@ -87,8 +92,11 @@ fn main() -> IORes<()> {
                 } else if source.chars().all(char::is_whitespace) {
                     return Ok(true);
                 }
-                let expr: PTerm = parse::parse(source).expect("Failed to parse").into();
-                let typ = engine.infer_type(expr.clone()).expect("Failed to infer type");
+                let ast = parse::parse(source).expect("Failed to parse");
+                let expr: PTerm = ast_to_term::ast_to_term(&ast).unwrap();
+                let typ = engine
+                    .infer_type(expr.clone())
+                    .expect("Failed to infer type");
                 println!("Type is {typ}");
                 let evaluated = engine.eval(expr);
                 println!("{evaluated}");
@@ -99,7 +107,8 @@ fn main() -> IORes<()> {
             filename: Some(filename),
         } => {
             let source = fs::read_to_string(filename)?;
-            let expr: PTerm = parse::parse(&source).unwrap().into();
+            let ast = parse::parse(&source).unwrap();
+            let expr: PTerm = ast_to_term::ast_to_term(&ast).unwrap();
             let ty = engine.infer_type(expr.clone()).unwrap();
             let evaluated = engine.eval(expr);
             println!("{evaluated}");
@@ -109,7 +118,8 @@ fn main() -> IORes<()> {
         }
         Action::Compile { filename } => {
             let source = fs::read_to_string(filename)?;
-            let expr: PTerm = parse::parse(&source).unwrap().into();
+            let ast = parse::parse(&source).unwrap();
+            let expr: PTerm = ast_to_term::ast_to_term(&ast).unwrap();
             let _ty = engine.infer_type(expr.clone()).unwrap();
             let evaluated = engine.eval(expr);
             println!("{evaluated}");
